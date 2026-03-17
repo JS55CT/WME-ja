@@ -1,156 +1,209 @@
-Code archived
-======
+# WME Junction Angle Info
 
-Since nobody wanted to actually get their changes merged, but decided to publish their own versions instead, I'm archiving this repository as obsolete. If you want a working version, get it from some other source.
+[![License: CC BY-NC-SA 3.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%203.0-lightgrey.svg)](http://creativecommons.org/licenses/by-nc-sa/3.0/)
+[![GreasyFork](https://img.shields.io/badge/GreasyFork-Install-red)](https://greasyfork.org/scripts/35547-wme-junction-angle-info)
 
-WME-ja
-======
+> **Actively maintained.** This repository continues the work of the original
+> [milkboy/WME-ja](https://github.com/milkboy/WME-ja) repo, which was archived by its original
+> author. All contributor history has been preserved to the best of our ability in keeping with the
+> [CC BY-NC-SA 3.0](http://creativecommons.org/licenses/by-nc-sa/3.0/) license.
 
-Waze Map Editor (WME) addon to help with junction design.
-If two connected segments are selected, it shows the turn angle, otherwise the the angle between each segment.
-I try to test with both Chrome (with Tampermonkey, as the userscript functionality changed) and Firefox (Greasemonkey), 
-but anything might break at any given time anyway :stuck_out_tongue_closed_eyes:
+---
 
-[Chrome](https://chrome.google.com/webstore/detail/wme-junctionangle/cfcpfikgmfoghjfpfepmklballeagadf) and 
-[Firefox](https://addons.mozilla.org/en-US/firefox/addon/wme-ja/) extensions are available also. 
+## Description
 
-See [Waze wiki pages](https://wiki.waze.com/wiki/Community_Plugins,_Extensions_and_Tools#WME_Junction_Angle_info) for more information on map editing addons
+A [Waze Map Editor (WME)](https://www.waze.com/editor) userscript addon to help with junction design.
+
+- When **two connected segments** are selected, it shows the **turn angle** between them and predicts the routing instruction Waze will give (Keep Left, Turn Right, U-Turn, etc.).
+- When **a single segment or node** is selected, it shows the angle between each connected segment.
+- Draws angle markers directly on the map canvas for at-a-glance reference while editing.
+
+---
+
+## Installation
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
+2. Click **[Install from GreasyFork](https://greasyfork.org/scripts/35547-wme-junction-angle-info)**.
+
+---
+
+## Features
+
+- Visual angle markers drawn on the WME map layer
+- Routing instruction prediction (Keep, Turn, U-Turn, Exit, Roundabout, etc.) with color coding
+- Override instruction detection (seb-d59)
+- Roundabout circle overlay option
+- Configurable angle thresholds (Turn vs Keep, U-Turn, gray zone)
+- Per-user settings saved in WME
+- Multilingual UI (see [Translations](#translations) below)
+
+---
+
+## Screenshots
+
+![Screenshot](screenshot2.png)
+
+![Screenshot](screenshot1.png)
+
+![Screenshot](screenshot3.png)
+
+---
+
+## Translations
+
+| Language | Contributor |
+| --- | --- |
+| English | Michael Wikberg |
+| Swedish (sv) | Michael Wikberg |
+| Finnish (fi) | Michael Wikberg |
+| Polish (pl) | *(contributor unknown — see commit history)* |
+| Russian (ru) | Sergey Kuznetsov "WazeRus" |
+| Czech (cs) | MajkiiTelini |
+| Latin-American Spanish (es-419) | witoco |
+| French (fr) | seb-d59 |
+| Ukrainian (uk) | Sapozhnik |
+| British English (en-GB) | ccclxv |
+
+---
+
+## Contributors
+
+This script is a community effort spanning more than a decade. The following contributors are
+credited based on codebase history, commit logs, and community records:
+
+| Contributor | Handle | Year(s) | Contribution |
+| --- | --- | --- | --- |
+| Michael Wikberg | milkboy | 2013–2019 | Original author; core logic, architecture, Swedish & Finnish translations |
+| Paweł Pyrczak | tkr85 | 2014 | WME update compatibility fixes |
+| — | AlanOfTheBerg | 2014 | WME update compatibility fixes |
+| — | berestovskyy | 2014 | WME update compatibility fixes |
+| — | FZ69617 | 2015 | Best-continuation (BC) logic fixes |
+| — | wlodek76 | 2015 | Contributions |
+| Sergey Kuznetsov | WazeRus | 2016 | Russian translation |
+| — | MajkiiTelini | 2016 | Czech translation |
+| — | witoco | 2016 | Latin-American Spanish translation |
+| — | seb-d59 | 2017–2018 | French translation; override instruction detection |
+| — | Sapozhnik | 2019 | Ukrainian translation |
+| — | ccclxv | — | British English (UK) translation |
+| — | g1220k | — | Contributions |
+| — | JS55CT | 2025+ | Current maintainer; SDK migration |
+
+> If you contributed and are not listed, or if any information above is incorrect, please open an
+> issue or pull request.
+
+---
+
+## License
 
 [![Creative Commons License](http://i.creativecommons.org/l/by-nc-sa/3.0/88x31.png)](http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US)
-*WME Junction Angle Info extension* by *Michael Wikberg*
-is licensed under a [Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License](http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US).
 
-Source code and issue tracker at https://github.com/milkboy/WME-ja
+**WME Junction Angle Info** is licensed under a
+[Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License](http://creativecommons.org/licenses/by-nc-sa/3.0/deed.en_US).
 
+**Original work** copyright © 2013–2019 Michael Wikberg \<waze@wikberg.fi\>
 
-![Screenshot](https://github.com/milkboy/WME-ja/raw/master/screenshot2.png)
+**Adapted and continued** by JS55CT, WazeDev, and contributors, 2025–present.
 
-![Screenshot](https://github.com/milkboy/WME-ja/raw/master/screenshot1.png)
+This is an adapted work derived from [milkboy/WME-ja](https://github.com/milkboy/WME-ja). Changes
+include updated WazeWrap SDK integration and ongoing maintenance. Under CC BY-NC-SA:
 
-![Screenshot](https://github.com/milkboy/WME-ja/raw/master/screenshot3.png)
+- **Attribution (BY):** You must credit all contributors listed above and link to the original source.
+- **NonCommercial (NC):** You may not use this work for commercial purposes.
+- **ShareAlike (SA):** If you adapt or redistribute this work, you must use the same CC BY-NC-SA 3.0 license.
 
-### Changelog
+Source code and issue tracker: [https://github.com/JS55CT/WME-ja](https://github.com/JS55CT/WME-ja)
+
+---
+
+## Changelog
+
+### 3.0.0 *(current — in development)*
+
+- SDK migration to current WME / WazeWrap APIs (in progress)
+
+### 2.2.16 *(Feb 6, 2025)*
+
+- Last release of the 2.x series
+
+### 2.x series *(GreasyFork continuation)*
+
+- Migrated from browser extension model to Tampermonkey userscript via WazeWrap
+- Requires [WazeWrap](https://greasyfork.org/scripts/24851-wazewrap) helper library
+- Ongoing maintenance following original author archiving the repository
+
+---
+
+### 1.x series *(original milkboy/WME-ja — archived)*
+
+See the [original repository](https://github.com/milkboy/WME-ja) for the full 1.x changelog.
 
 #### 1.13.1
+
 - Update for new WME URLs
 
 #### 1.13.0
+
 - Update for new WME
 - Added Czech translation (thanks to MajkiiTelini)
 
 #### 1.12.0
+
 - Don't run on user pages
 - Add option for showing/hiding the JAI layer on page load
 
 #### 1.11.0
-- Bootstrap fixes
-- U-turn feature polishing
+
+- Bootstrap fixes; U-turn feature polishing
 
 #### 1.10.0
+
 - Several updates for changed Waze routing logic (better name matching, angle changes)
-- U-turn support
-- Script loading and style tweaks
-- Other miscellaneous bug fixes
+- U-turn support; script loading and style tweaks
 
 #### 1.9.0
+
 - Improved roundabout routing logic
 - Fixed several BC routing instruction guessing issues
 - Added Polish translation
 - Added new presentation style and arrow options for routing instructions
 
-#### 1.8.4
-- Fixed (hopefully) date range based restriction detection
-- Fixed best continuation logic segment filtering. DOH.
+#### 1.8.x
 
-#### 1.8.3
-- Minor settings tab tweaks
-- Added missing translations for the new angle mode selection options
-
-#### 1.8.2
-- Added support for having JAI show departure angles with routing instructions as default (instead of just the absolute angles at selection ends)
+- Date range restriction detection fixes
+- BC logic segment filtering fix
+- Settings tab tweaks; added missing translations for angle mode selection
+- Added support for JAI showing departure angles with routing instructions as default
 
 #### 1.8.1
+
 - BC logic fixes by FZ69617
 
 #### 1.7.0
-- Roundabout checking! For non-normal roundabouts, the angle will be shown in orange (default), and "turn color" for normal roundabouts
-- Added option for roundabout circle display (always, when selected, never)
 
-#### 1.6.7
-- Do calculations after a small delay (with each new recalculation request resetting the delay). Should fix "application not responding" and similar issues. Fixed compatibility issues with WME toolbox.
+- Roundabout checking with color-coded display
+- Added option for roundabout circle display (always / when selected / never)
 
-#### 1.6.6
-- Always redraw points on zoom, since distance should be changed
-- Show angles on zoom level 10 also
+#### 1.6.x
 
-#### 1.6.5
-- Fixed (one of the) best continuation detection bugs
-- Added detection of "private vehicle" + "all day" + "every day", restriction
+- Color codes for different turn instructions; user-configurable options
+- Input validation and WME look & feel
+- Permalink fixes for selected nodes; settings load fix for Chrome extension
 
-#### 1.6.4
-- Add version number display in settings tab
+#### 1.5.x
 
-#### 1.6.3
-- Add basic input validation and the WME look&feel
-
-#### 1.6.2
-- Fixed 3 issues with permalink to selected nodes
-
-#### 1.6.1
-- Added more translated strings
-- Fix settings to actually load properly with Chrome extension
-
-#### 1.6
-- Add color codes for different turn instructions
-- Add user configurable options
-
-#### 1.5.10
-- Fixes by tkr85 (after latest WME update)
-
-#### 1.5.9
-- Added support for translations and the new beta editor URL.
-
-#### 1.5.8
-- Updates for new WME by several contributors (sorry if I missed someone); Paweł Pyrczak (tkr85), AlanOfTheBerg, berestovskyy
-
-#### 1.5.7
-- Remove 2 (of 4) Firefox extension validation warnings
-AlanOfTheBerg
-
-#### 1.5.6
-- Fixed URL detection to run script on localized editor also.
-
-#### 1.5.5
-- Fixed layer selection div size (now the junction angles layer should always be visible in the list)
-
-#### 1.5.4
-- Misc tweaks for browser addon capabilities
-- Added new editor URLs
-
-#### 1.5
-- Undefined reference on 'a2' in debug mode #10 (thanks to [bensmithurst](https://github.com/bensmithurst))
-- Misc small fixes
+- Translation support added (Swedish first)
+- WME update compatibility fixes by tkr85, AlanOfTheBerg, berestovskyy
+- Various URL and layer display fixes
 
 #### 1.2
-- "0" angles show empty label enhancement #5
-- Markers should not be displayed on zoom levels where the segments are not visible invalid  #3
-- Marker distance should be dependent on zoom level enhancement #2
-- Script stops working if a segment is deleted bug #1
 
-#### 1.1
-- Should work in Firefox (with Greasemonkey) also
+- "0" angle empty label fix
+- Hide markers on zoom levels where segments are not visible
+- Marker distance now zoom-dependent
+- Fix for segment-deletion crash
 
-#### 1.0
-- Show the "turn angle" in green if two connected segments are selected
+#### 1.0 – 1.1
 
-#### 0.4
-- Show all junction angles in the map itself
-
-#### 0.3
-- Fix calculation of angles larger than 180°
-
-#### 0.2
-- Add handlers to "mouse up" event, so that angle is updated while editing a segment
-
-#### 0.1
-- First release
+- Show "turn angle" in green for connected segments
+- Show all junction angles on map canvas
+- Firefox (Greasemonkey) support
