@@ -51,18 +51,18 @@ A [Waze Map Editor (WME)](https://www.waze.com/editor) userscript addon to help 
 
 ## Translations
 
-| Language | Contributor |
-| --- | --- |
-| English | Michael Wikberg |
-| Swedish (sv) | Michael Wikberg |
-| Finnish (fi) | Michael Wikberg |
-| Polish (pl) | *(contributor unknown — see commit history)* |
-| Russian (ru) | Sergey Kuznetsov "WazeRus" |
-| Czech (cs) | MajkiiTelini |
-| Latin-American Spanish (es-419) | witoco |
-| French (fr) | seb-d59 |
-| Ukrainian (uk) | Sapozhnik |
-| British English (en-GB) | ccclxv |
+| Language                        | Contributor                                  |
+| ------------------------------- | -------------------------------------------- |
+| English                         | Michael Wikberg                              |
+| Swedish (sv)                    | Michael Wikberg                              |
+| Finnish (fi)                    | Michael Wikberg                              |
+| Polish (pl)                     | _(contributor unknown — see commit history)_ |
+| Russian (ru)                    | Sergey Kuznetsov "WazeRus"                   |
+| Czech (cs)                      | MajkiiTelini                                 |
+| Latin-American Spanish (es-419) | witoco                                       |
+| French (fr)                     | seb-d59                                      |
+| Ukrainian (uk)                  | Sapozhnik                                    |
+| British English (en-GB)         | ccclxv                                       |
 
 ---
 
@@ -71,22 +71,22 @@ A [Waze Map Editor (WME)](https://www.waze.com/editor) userscript addon to help 
 This script is a community effort spanning more than a decade. The following contributors are
 credited based on codebase history, commit logs, and community records:
 
-| Contributor | Handle | Year(s) | Contribution |
-| --- | --- | --- | --- |
-| Michael Wikberg | milkboy | 2013–2019 | Original author; core logic, architecture, Swedish & Finnish translations |
-| Paweł Pyrczak | tkr85 | 2014 | WME update compatibility fixes |
-| — | AlanOfTheBerg | 2014 | WME update compatibility fixes |
-| — | berestovskyy | 2014 | WME update compatibility fixes |
-| — | FZ69617 | 2015 | Best-continuation (BC) logic fixes |
-| — | wlodek76 | 2015 | Contributions |
-| Sergey Kuznetsov | WazeRus | 2016 | Russian translation |
-| — | MajkiiTelini | 2016 | Czech translation |
-| — | witoco | 2016 | Latin-American Spanish translation |
-| — | seb-d59 | 2017–2018 | French translation; override instruction detection |
-| — | Sapozhnik | 2019 | Ukrainian translation |
-| — | ccclxv | — | British English (UK) translation |
-| — | g1220k | — | Contributions |
-| — | JS55CT | 2025+ | Current maintainer; SDK migration |
+| Contributor      | Handle        | Year(s)   | Contribution                                                              |
+| ---------------- | ------------- | --------- | ------------------------------------------------------------------------- |
+| Michael Wikberg  | milkboy       | 2013–2019 | Original author; core logic, architecture, Swedish & Finnish translations |
+| Paweł Pyrczak    | tkr85         | 2014      | WME update compatibility fixes                                            |
+| —                | AlanOfTheBerg | 2014      | WME update compatibility fixes                                            |
+| —                | berestovskyy  | 2014      | WME update compatibility fixes                                            |
+| —                | FZ69617       | 2015      | Best-continuation (BC) logic fixes                                        |
+| —                | wlodek76      | 2015      | Contributions                                                             |
+| Sergey Kuznetsov | WazeRus       | 2016      | Russian translation                                                       |
+| —                | MajkiiTelini  | 2016      | Czech translation                                                         |
+| —                | witoco        | 2016      | Latin-American Spanish translation                                        |
+| —                | seb-d59       | 2017–2018 | French translation; override instruction detection                        |
+| —                | Sapozhnik     | 2019      | Ukrainian translation                                                     |
+| —                | ccclxv        | —         | British English (UK) translation                                          |
+| —                | g1220k        | —         | Contributions                                                             |
+| —                | JS55CT        | 2025+     | Current maintainer; SDK migration                                         |
 
 > If you contributed and are not listed, or if any information above is incorrect, please open an
 > issue or pull request.
@@ -117,15 +117,15 @@ Source code and issue tracker: [https://github.com/JS55CT/WME-ja](https://github
 
 ## Changelog
 
-### 3.0.0 *(current — in development)*
+### 3.0.0 _(current — in development)_
 
 - SDK migration to current WME / WazeWrap APIs (in progress)
 
-### 2.2.16 *(Feb 6, 2025)*
+### 2.2.16 _(Feb 6, 2025)_
 
 - Last release of the 2.x series
 
-### 2.x series *(GreasyFork continuation)*
+### 2.x series _(GreasyFork continuation)_
 
 - Migrated from browser extension model to Tampermonkey userscript via WazeWrap
 - Requires [WazeWrap](https://greasyfork.org/scripts/24851-wazewrap) helper library
@@ -133,7 +133,7 @@ Source code and issue tracker: [https://github.com/JS55CT/WME-ja](https://github
 
 ---
 
-### 1.x series *(original milkboy/WME-ja — archived)*
+### 1.x series _(original milkboy/WME-ja — archived)_
 
 See the [original repository](https://github.com/milkboy/WME-ja) for the full 1.x changelog.
 
