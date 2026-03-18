@@ -111,15 +111,18 @@ include updated WazeWrap SDK integration and ongoing maintenance. Under CC BY-NC
 - **NonCommercial (NC):** You may not use this work for commercial purposes.
 - **ShareAlike (SA):** If you adapt or redistribute this work, you must use the same CC BY-NC-SA 3.0 license.
 
-Source code and issue tracker: [https://github.com/JS55CT/WME-ja](https://github.com/JS55CT/WME-ja)
+Source code and issue tracker: [https://github.com/WazeDev/WME-JAI](https://github.com/WazeDev/WME-JAI)
 
 ---
 
 ## Changelog
 
-### 3.0.0 _(current — in development)_
+### 3.0.1 _(current)_
 
-- SDK migration to current WME / WazeWrap APIs (in progress)
+- Migrated from legacy W/OpenLayers APIs to the WME JavaScript SDK
+- Roundabout center-angle marker now reflects per-path normality (white/orange per entry–exit pair)
+- ±N° deviation markers now appear at every oblique exit on any size roundabout
+- Departure-mode markers and ±N° markers are zoom-aware and no longer overlap
 
 ### 2.2.16 _(Feb 6, 2025)_
 
