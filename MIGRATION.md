@@ -2,8 +2,7 @@
 
 This document records all changes made between the last committed state (`7ab681a` — the
 adopted milkboy/WME-ja codebase) and the current v3.0.0 working tree. The migration was
-performed entirely in Claude Code sessions and is organized into phases matching the order
-work was completed.
+performed phases outlined below.
 
 ---
 
@@ -319,4 +318,3 @@ New reference document covering:
 | `README.md` | Updated maintainer info, contributor table, changelog |
 | `SETTINGS.md` | New — comprehensive settings and behavior reference |
 | `MIGRATION.md` | New — this document |
-| `.gitignore` | Cleaned up (legacy entries removed) |

@@ -49,7 +49,7 @@ When the turn angle between two roads at a node is near 180°, JAI classifies it
 
 ### Double-turn via short connector (≤ 15 m)
 
-A "double-turn" occurs when a driver crosses a very short connector segment (≤ 15 m) in a way that the combined heading change across both junctions is near 180°. The driver doesn't make one sharp U-turn — they make two separate turns across a tiny stub — but the net effect is a U-turn path that Waze may mishandle.
+A "double-turn" occurs when a driver crosses a very short connector segment (≤ 15 m) in a way that the combined heading change across both junctions is near 180°. The driver doesn't make one sharp U-turn — they make two separate turns across a tiny stub — but the net effect is a U-turn path.
 
 **How to see it:**
 
@@ -60,10 +60,10 @@ JAI then inspects every road connected at both ends of that connector. For each 
 
 | Combined angle | Classification | Marker color |
 | --- | --- | --- |
-| 176.5° – 183.5° | **No U-turn restriction set** — the path forms a U-turn but no restriction prevents it | Purple |
+| 176.5° – 183.5° | **U-turn** — the path forms a U-turn and there is no restriction to prevent it | Purple |
 | 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°) | Orange |
 
-The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short stub that together add up to a ~180° heading change. The script is telling you that a no-U-turn restriction is likely missing on one or both of those turns.
+The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short stub (≤ 15 m) that together add up to a ~180° heading change. The script is telling you that a U-turn is lickly & there is no restriction in place to prevent it.
 
 > **Note:** This check only runs in Departure mode when a segment is selected (giving JAI both endpoint nodes to work with). Selecting just a node, or being in Absolute mode, will not trigger it.
 
@@ -160,7 +160,7 @@ Available sets:
 
 | Option | Characters |
 | --- | --- |
-| `<><>^` | ASCII — plain `<`, `>`, `^` |
+| `<><>` | ASCII — plain `< >` |
 | `⇦⇨⇦⇨⇧` | Outlined block arrows |
 | `⇐⇒⇐⇒⇑` | Double-stroke arrows (left/right only) |
 | `←→←→↑` | Simple thin arrows |
@@ -187,10 +187,10 @@ Two color settings accompany this option:
 
 **Roundabout (non-normal) color** (default orange `#ff8000`) — colors two things independently:
 
-- The **center-angle marker** (e.g. `94.16°`) placed at the roundabout center point — colored orange when the **specific path** you selected (entry node → center → exit node) is more than 15° off perpendicular. The same roundabout can show white for one entry/exit pair and orange for another.
+- The **center-angle marker** placed at the roundabout center point — `colored orange (Non-Normal)` when the **specific path** you selected (entry node → center → exit node) is more than 15° off perpendicular. The same roundabout can show `white (Normal)` for one entry/exit pair and orange for another.
 - The **`±N°` deviation markers** placed at individual exit nodes that are not perpendicular — colored orange at every exit whose angle is outside the 90° ± 15° range, regardless of the currently selected path.
 
-When every exit in your selected path is within 15° of perpendicular, those markers render **white** (BC — no instruction) and this color setting has no visible effect.
+When every exit in your selected path is within 15° of perpendicular, those markers render **white** (Normal).
 
 ---
 
@@ -216,10 +216,10 @@ When both an entry node (`in_n`) and an exit node (`out_n`) are identified, JAI 
 
 The color is determined **per path** — based solely on this specific entry/exit angle, not on whether other exits are perpendicular:
 
-- **White (BC)** — the path angle is within 15° of perpendicular (90° ± 15°). Waze gives no spoken instruction inside a roundabout.
-- **Orange (non-normal color)** — the path angle is more than 15° off perpendicular. This entry/exit combination may produce unexpected routing behavior.
+- **White (normal)** — the path angle is within 15° of perpendicular (90° ± 15°). Waze gives normal roundabout instructions fro the movment.
+- **Orange (non-normal)** — the path angle is more than 15° off perpendicular. This entry/exit combination Waze will give non-normal roundabout instructions for this moment.
 
-Per Waze editor documentation: *"A roundabout can be both normal and non-normal at the same time depending on your entry node."* This is why the same roundabout can show white for one selected arc and orange for another.
+>Per Waze editor documentation: *"A roundabout can be both normal and non-normal at the same time depending on your entry node."* This is why the same roundabout can show white for one selected arc and orange for another. See the [Roundabout Wazo Page for more](https://www.waze.com/discuss/t/roundabout/377970).
 
 The number shown is the **raw triangle angle** (entry node → center → exit node), not the deviation from perpendicular. A perfectly perpendicular exit produces a center angle of exactly 90°. An exit that is 42.92° off perpendicular produces a center angle of 47.08° (because 47.08° + 42.92° = 90°). The corresponding `±N°` deviation marker at that exit node will always show the complement: `90° − center_angle` (or `center_angle` itself if the path is less than 45°).
 
@@ -229,10 +229,10 @@ The normal departure-mode calculation still runs for the entry road. Each drivab
 
 | Routing type | What it means |
 | --- | --- |
-| **BC** (white) | Entering or continuing inside the roundabout — Waze gives no spoken instruction |
-| **ROUNDABOUT_EXIT** (exit color) | Exiting the roundabout onto a non-junction road — Waze gives an exit instruction |
+| **Normal** (white) | Entering or continuing inside the roundabout — Waze normal roundabout spoken instructions |
+| **ROUNDABOUT_EXIT** (Exit Color defaults to Blue) | Exiting the roundabout onto a non-junction road — Waze gives the approperate Normal or non-normal exit instruction |
 
-Waze never gives a turn instruction *inside* a roundabout. The color-coding makes it immediately visible which arcs are continuations and which exits will generate a spoken instruction.
+The color-coding makes it immediately visible which arcs are continuations and which exits will generate a spoken instruction.
 
 ### `ja_is_roundabout_normal()` — what "normal" means
 
@@ -241,20 +241,18 @@ This function runs whenever a roundabout is selected. It checks every exit node 
 1. For every junction arc segment, the node at its **`toNodeId`** end is examined.
 2. A node qualifies as a valid exit if at least one of its non-junction connected segments is drivable outward (checked with `isTurnAllowedBySegmentDirections`).
 3. For every valid exit node (excluding the entry node `n_in`), the angle formed by the triangle **entry node → roundabout center → exit node** is computed. The angle is then normalized to the nearest 90° boundary: `angle % 90`.
-4. If the normalized angle is outside `[0°, 15°]` and `[75°, 90°]` — i.e., the exit is not within 15° of perpendicular — a `±` deviation marker is placed at that exit node in `roundaboutColor`.
+4. If the normalized angle is outside `[0°, 15°]` and `[75°, 90°]` — i.e., the exit is not within 15° of perpendicular — a `±` deviation marker is placed at that exit node in `Roundabout Non-Normal Exit Color` defult is Orange.
 
-**What the `±N°` marker means:** The exit road at that node is `N°` away from a right angle. It is computed as `Math.min(angle % 90, 90 − angle % 90)` — the minimum distance to the nearest 90° boundary — so it always reads between 0° and 45°. A well-mapped roundabout should have all exits near ±0° (perfectly perpendicular). Large values indicate the exit geometry may need adjustment.
+**What the `±N°` marker means:** The exit road at that node is `X°` away from a right angle. It is computed as `Math.min(angle % 90, 90 − angle % 90)` — the minimum distance to the nearest 90° boundary — so it always reads between 0° and 45°.
 
 **Relationship to the center-angle marker:** Both values come from the same triangle angle. The center marker shows the raw angle (e.g. 47.08°); the `±N°` marker at the corresponding exit shows how far that angle is from the nearest perpendicular (e.g. ±42.92°, because 90° − 47.08° = 42.92°). The two numbers are different by design — they answer different questions about the same geometry.
 
 ### Overlay circle
 
-When the overlay is enabled, `ja_draw_roundabout_overlay()` draws a circle for each relevant junction:
+When the overlay is enabled, `Show roundabout = "Always" or "When Selected"` draws a circle for each relevant junction:
 
 - **Radius** = mean distance (in meters) from the roundabout's WME center point to all of its junction nodes, converted to kilometers for Turf.js
 - **Shape** = 40-step polygon (smooth approximation)
 - The circle is not a perfect fit — it is an average, so nodes that are unevenly spaced will cause the circle to not align exactly with the road ring
 
 ---
-
-*This document covers the v3.0.0 SDK-migrated version of WME Junction Angle Info, including the restored two-segment selection mode.*
