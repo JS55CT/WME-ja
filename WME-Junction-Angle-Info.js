@@ -2541,6 +2541,7 @@
           rOverAlways: 'Always',
           decimals: 'Number of decimals',
           pointSize: 'Base point size',
+          settingsguide: 'Settings & User Guide',
           roundaboutnav: 'WIKI: Roundabouts',
           ghissues: 'JAI issue tracker',
         });
@@ -2578,6 +2579,7 @@
           rOverAlways: 'Vždy',
           decimals: 'Počet des. míst',
           pointSize: 'Velikost písma',
+          settingsguide: 'Nastavení a Uživatelská příručka',
           roundaboutnav: 'US WIKI: Kruhové objezdy',
           ghissues: 'Hlášení problémů JAI',
         });
@@ -2684,6 +2686,7 @@
           rOverAlways: 'Всегда',
           decimals: '- знаков после запятой',
           pointSize: '- размер кружка',
+          settingsguide: 'Настройки и руководство пользователя',
           roundaboutnav: 'Вики: круговые перекрестки',
           ghissues: 'Сообщить об ошибке',
         });
@@ -2756,6 +2759,7 @@
           decimals: 'Nombre de decimales',
           pointSize: 'Taille des bulles',
           resetToDefault: 'Réinitialiser par défaut',
+          settingsguide: 'Paramètres et Guide utilisateur',
           roundaboutnav: 'WIKI: Rond-point (en)',
           ghissues: 'JAI Reporter un problème',
         });
@@ -2792,6 +2796,7 @@
           rOverAlways: 'Siempre',
           decimals: 'Decimales',
           pointSize: 'Tamaño del texto',
+          settingsguide: 'Configuración y Guía del usuario',
           roundaboutnav: 'WIKI: Rotondas',
           ghissues: 'Seguimiento de problemas',
         });
@@ -2828,6 +2833,7 @@
           rOverAlways: 'Завжди',
           decimals: '- знаків після коми',
           pointSize: '- розмір шрифту',
+          settingsguide: 'Налаштування та посібник користувача',
           roundaboutnav: 'WIKI: кругові перехрестя(en)',
           ghissues: 'JAI - Повідомити про помилку',
         });
@@ -3130,6 +3136,7 @@
 
     var infoList = document.createElement('ul');
     infoList.className = 'list-unstyled';
+    infoList.appendChild(ja_helpLink('https://github.com/WazeDev/WME-JAI/blob/development/USER-SETTINGS.md', 'settingsguide'));
     infoList.appendChild(ja_helpLink('https://www.waze.com/discuss/t/roundabout/377970', 'roundaboutnav'));
     infoList.appendChild(ja_helpLink('https://www.waze.com/discuss/t/script-wme-junction-angle-info/52238', 'ghissues'));
     footer.appendChild(infoList);
