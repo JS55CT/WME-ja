@@ -65,7 +65,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 3; // 0=off, 1=basic info, 2=debug, 3=verbose, 4=insane — lower to 1 before release
+  var junctionangle_debug = 1; // 0=off, 1=basic info, 2=debug, 3=verbose, 4=insane — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
@@ -2285,33 +2285,62 @@
         // DISPLAY ANGLE & TYPE CLASSIFICATION
         // ─────────────────────────────────────────────────────────────────────
         //
+        // Both JB and Path far-turns share the same structure:
+        //   1. Override check (turn.instructionOpCode) — tried first for both types.
+        //   2. Display angle selection (turnAngle).
+        //   3. Type/color classification via ja_guess_routing_instruction where possible.
+        //
         // PATH TURNS (isPathTurn)
         //   Waze uses the LOCAL turn at the connecting node (lastPathSeg → toSeg) as the
         //   instruction for the path exit — same as a regular node turn at that point —
         //   unless the Path itself carries an instructionOpCode override.
         //   Display angle = lastPathAngle → exitAngle (local connecting-node angle).
-        //   Type = ja_guess_routing_instruction at the connecting node.
-        //   Connecting nodes are regular road junctions, so ja_is_turn_allowed works there.
+        //   Type = ja_guess_routing_instruction at the connecting node (regular road junction;
+        //   no JB restriction interference, so full BC/KEEP/EXIT/TURN classification works).
         //
         // JUNCTION BOX TURNS (isJunctionBoxTurn)
-        //   Display angle = overall entryAngle → exitAngle (unique per exit segment;
-        //   avoids the "all exits same angle" problem when exits share the same first
-        //   internal segment).
-        //   Type = angle-based only — ja_guess_routing_instruction cannot be used at JB
-        //   internal connecting nodes because their underlying turn restrictions are often
-        //   set to NO_TURN to force routing through the JB framework.
+        //   DISPLAY ANGLE — 2-step algorithm (mirrors Waze instruction selection):
+        //   • step1 = entryAngle → firstExitAngle (angle at entry node into first internal seg)
+        //   • step2 = lastPathAngle → exitAngle   (local angle at connecting node → exit seg)
+        //   • Use step1 if |step1| ≥ TURN_ANGLE threshold (~44°) — instruction fires at
+        //     entry node (Case A). Step1 is shared by ALL exits from the same segmentPath[0],
+        //     so it only applies when it actually indicates a real (non-BC) turn.
+        //   • Else use step2 — instruction fires at connecting node (Case B). Step2 is unique
+        //     per exit segment, giving distinct angles when multiple exits share segmentPath[0].
+        //   Display angle and type always use the same selected turnAngle.
+        //
+        //   TYPE CLASSIFICATION — ja_guess_routing_instruction at the connecting node (first),
+        //   falling back to angle-based thresholds only when it returns NO_TURN:
+        //   • The path validity walk (above) already confirmed lastPathSeg→toSeg is allowed at
+        //     the connecting node, so ja_guess_routing_instruction gives a valid classification.
+        //   • NO_TURN from ja_guess indicates a JB-forced internal restriction at that node.
+        //     Angle-based thresholds (U_TURN / PROBLEM / TURN / BC) give the best fallback.
         //
         // Override check (turn.instructionOpCode) is tried first for both types.
 
         var turnAngle;
         if (turn.isPathTurn) {
-          // Local connecting-node angle — what Waze uses for the path exit instruction
+          // Local connecting-node angle — what Waze uses for the path exit instruction.
+          // Always unique per exit because each exit segment has a different departure bearing.
           turnAngle = (lastPathAngle != null)
             ? ja_angle_diff(lastPathAngle, exitAngle, false)
             : ja_angle_diff(entryAngle, exitAngle, false); // fallback if lastPathAngle unavailable
         } else {
-          // JB: overall entry→exit (different per exit segment)
-          turnAngle = ja_angle_diff(entryAngle, exitAngle, false);
+          // JB: 2-step — use step1 if it would produce a real (non-BC) instruction,
+          // otherwise fall back to step2. Display AND type both use the selected angle
+          // so that the shown angle matches the color.
+          //
+          // step1 = entryAngle → firstExitAngle (same for all exits sharing segmentPath[0])
+          // step2 = lastPathAngle → exitAngle   (unique per exit)
+          //
+          // "BC at the local turn level" = |step1| < TURN_ANGLE threshold (< ~44°).
+          // When step1 is BC, Waze fires at the connecting node using step2 instead.
+          var jbStep1Angle = ja_angle_diff(entryAngle, firstExitAngle, false);
+          var jbStep2Angle = (lastPathAngle != null)
+            ? ja_angle_diff(lastPathAngle, exitAngle, false)
+            : jbStep1Angle; // fallback if lastPathSeg bearing unavailable
+          // Use step1 only if it's a meaningful turn (TURN or above); else use step2.
+          turnAngle = Math.abs(jbStep1Angle) >= TURN_ANGLE - GRAY_ZONE ? jbStep1Angle : jbStep2Angle;
         }
 
         var farTurnType;
@@ -2341,23 +2370,51 @@
               if (connectingNode_obj) {
                 connectingNode_obj.connectedSegmentIds.forEach(function (cSegId) {
                   var cSeg = sdk.DataModel.Segments.getById({ segmentId: cSegId });
-                  connectingAngles.push([ja_getAngle(connectingNodeId, cSeg), cSegId, false]);
+                  var cAngle = ja_getAngle(connectingNodeId, cSeg);
+                  if (cAngle != null) { // skip segments not yet loaded in model
+                    connectingAngles.push([cAngle, cSegId, false]);
+                  }
                 });
               }
               farTurnType = connectingNode_obj
                 ? ja_guess_routing_instruction(connectingNode_obj, lastPathSegId, turn.toSegmentId, connectingAngles)
                 : ja_routing_type.TURN;
             } else {
-              // JB: angle-based — avoids ja_is_turn_allowed failure on internal nodes
-              var absAngle = Math.abs(turnAngle);
-              if (absAngle > U_TURN_ANGLE + GRAY_ZONE) {
-                farTurnType = ja_routing_type.U_TURN;
-              } else if (absAngle > U_TURN_ANGLE - GRAY_ZONE) {
-                farTurnType = ja_routing_type.PROBLEM; // grey zone near U-turn
-              } else if (absAngle >= TURN_ANGLE - GRAY_ZONE) {
-                farTurnType = ja_routing_type.TURN;
-              } else {
-                farTurnType = ja_routing_type.BC; // JB entry→exit is nearly straight
+              // JB: try ja_guess_routing_instruction at the connecting node first.
+              // The path validity walk already confirmed lastPathSeg→toSeg is allowed
+              // at this node, so ja_is_turn_allowed returns true and the full
+              // BC/KEEP/EXIT/TURN classification runs correctly.
+              // Fall back to angle-based only when the result is NO_TURN — which
+              // indicates the connecting node has a JB internal restriction on that
+              // turn pair (forced blocking to route traffic through the JB framework).
+              var jbConnNode_obj = sdk.DataModel.Nodes.getById({ nodeId: connectingNodeId });
+              var jbConnAngles = [];
+              if (jbConnNode_obj) {
+                jbConnNode_obj.connectedSegmentIds.forEach(function (cSegId) {
+                  var cSeg = sdk.DataModel.Segments.getById({ segmentId: cSegId });
+                  var cAngle = ja_getAngle(connectingNodeId, cSeg);
+                  if (cAngle != null) {
+                    jbConnAngles.push([cAngle, cSegId, false]);
+                  }
+                });
+                var jbGuessed = ja_guess_routing_instruction(jbConnNode_obj, lastPathSegId, turn.toSegmentId, jbConnAngles);
+                if (jbGuessed !== ja_routing_type.NO_TURN) {
+                  farTurnType = jbGuessed;
+                }
+              }
+              // Angle-based fallback: used when ja_guess returns NO_TURN (JB internal
+              // restriction at connecting node) or when connectingNode is not loaded.
+              if (!farTurnType) {
+                var absAngle = Math.abs(turnAngle);
+                if (absAngle > U_TURN_ANGLE + GRAY_ZONE) {
+                  farTurnType = ja_routing_type.U_TURN;
+                } else if (absAngle > U_TURN_ANGLE - GRAY_ZONE) {
+                  farTurnType = ja_routing_type.PROBLEM;
+                } else if (absAngle >= TURN_ANGLE - GRAY_ZONE) {
+                  farTurnType = ja_routing_type.TURN;
+                } else {
+                  farTurnType = ja_routing_type.BC;
+                }
               }
             }
           }
