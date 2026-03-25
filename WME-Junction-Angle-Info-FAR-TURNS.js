@@ -453,6 +453,7 @@
      */
     var doubleTurns = {
       data: {}, //Structure: map<s_id, map<s_out_id, list<{s_in_id, angle, turn_type}>>>
+      farExitMarkers: [], //Markers to draw at the median's far exit node when an arm is selected
 
       collect: function (s_id, s_in_id, s_out_id, angle, turn_type) {
         ja_log('Collecting double-turn path from ' + s_in_id + ' to ' + s_out_id + ' via ' + s_id + ' with angle ' + angle + ' type: ' + turn_type, 2);
@@ -532,6 +533,64 @@
             });
           });
         }
+      });
+
+      // Second pass: trigger double-turn detection when an entry/exit arm is selected.
+      // For each selected segment, look at its endpoint nodes for qualifying median neighbors.
+      // Skips any neighbor that is itself a selected segment (already handled by first loop).
+      var selectedIds = {};
+      getselfeat().forEach(function (s) { selectedIds[s.id] = true; });
+
+      getselfeat().forEach(function (selectedSegment) {
+        var armId = selectedSegment.id;
+        var armSeg = sdk.DataModel.Segments.getById({ segmentId: armId });
+        if (!ja_is_up_to_primary_road(armSeg)) return;
+
+        [armSeg.fromNodeId, armSeg.toNodeId].forEach(function (armNodeId) {
+          var armNode = sdk.DataModel.Nodes.getById({ nodeId: armNodeId });
+
+          armNode.connectedSegmentIds.forEach(function (neighborId) {
+            if (neighborId === armId) return;
+            if (selectedIds[neighborId]) return; // already handled as direct median selection
+
+            var neighbor = sdk.DataModel.Segments.getById({ segmentId: neighborId });
+            var nLen = Math.round(ja_segment_length(neighbor));
+            if (nLen > 49) return;
+            if (nLen > 30 && !ja_segment_has_lane_guidance(armId, armNodeId, neighborId)) return;
+            if (!ja_is_turn_allowed(armSeg, armNode, neighbor)) return;
+
+            var a_arm_side = ja_getAngleMidleSeg(armNodeId, neighbor);
+            var medianFarNodeId = neighbor.fromNodeId === armNodeId ? neighbor.toNodeId : neighbor.fromNodeId;
+            var a_exit_side = ja_getAngleMidleSeg(medianFarNodeId, neighbor);
+            var medianFarNode = sdk.DataModel.Nodes.getById({ nodeId: medianFarNodeId });
+
+            var arm_a = ja_getAngle(armNodeId, armSeg);
+            var arm_angle = ja_angle_diff(arm_a, a_arm_side, false);
+
+            medianFarNode.connectedSegmentIds.forEach(function (exitId) {
+              if (exitId === neighborId) return;
+              var exitSeg = sdk.DataModel.Segments.getById({ segmentId: exitId });
+              if (!ja_is_up_to_primary_road(exitSeg)) return;
+              if (!ja_is_turn_allowed(neighbor, medianFarNode, exitSeg)) return;
+
+              var exit_a = ja_getAngle(medianFarNodeId, exitSeg);
+              var exit_angle = ja_angle_diff(exit_a, a_exit_side, false);
+              var combined_angle = Math.abs(exit_angle - arm_angle);
+              ja_log('Entry-arm trigger: ' + armId + ' -> ' + neighborId + ' -> ' + exitId + ' angle: ' + combined_angle, 3);
+
+              if (combined_angle >= 175 - GRAY_ZONE && combined_angle <= 185 + GRAY_ZONE) {
+                var turn_type = combined_angle >= 175 + GRAY_ZONE && combined_angle <= 185 - GRAY_ZONE
+                  ? ja_routing_type.NO_U_TURN : ja_routing_type.PROBLEM;
+                doubleTurns.farExitMarkers.push({
+                  farNodeId: medianFarNodeId,
+                  exitBearing: exit_a,
+                  angle: combined_angle,
+                  turn_type: turn_type
+                });
+              }
+            });
+          });
+        });
       });
     }
 
@@ -749,6 +808,21 @@
         ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids);
       }
     }
+
+    // Draw far-exit double-turn markers triggered by arm selection.
+    // Placed at the median's far node along the exit arm's bearing — matching the
+    // visual position produced when the median itself is selected directly.
+    doubleTurns.farExitMarkers.forEach(function (item) {
+      var farNode = sdk.DataModel.Nodes.getById({ nodeId: item.farNodeId });
+      if (!farNode) return;
+      var farLd = ja_label_distance * Math.cos((farNode.geometry.coordinates[1] * Math.PI) / 180);
+      var pt = turf.destination(
+        turf.point(farNode.geometry.coordinates),
+        (farLd * 2) / 1000,
+        (90 - item.exitBearing + 360) % 360
+      ).geometry;
+      ja_draw_marker(pt, farNode, farLd, item.angle, item.exitBearing, true, item.turn_type);
+    });
 
     return false;
   }
