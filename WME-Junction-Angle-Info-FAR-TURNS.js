@@ -65,7 +65,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 1; // 0=off, 1=basic info, 2=debug, 3=verbose, 4=insane — lower to 1 before release
+  var junctionangle_debug = 1; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
@@ -298,10 +298,10 @@
         ja_label_distance = 300;
         break;
       default:
-        ja_log('Unsupported zoom level: ' + sdk.Map.getZoomLevel() + '!', 2);
+        ja_log('Unsupported zoom level: ' + sdk.Map.getZoomLevel() + '!', 1);
     }
     ja_label_distance *= 1 + 0.2 * parseInt(ja_getOption('decimals'));
-    ja_log('zoom: ' + sdk.Map.getZoomLevel() + ' -> distance: ' + ja_label_distance, 2);
+    ja_log('zoom: ' + sdk.Map.getZoomLevel() + ' -> distance: ' + ja_label_distance, 3);
     return ja_label_distance;
   }
 
@@ -480,17 +480,18 @@
       },
     };
 
-    //Loop through all 15m or less long segments and collect double-turn disallowed ones
+    //Loop through segments <=30 m (always qualifies) or 31-49 m with lane guidance on the incoming segment
     if (ja_getOption('angleMode') === 'aDeparture' && ja_nodes.length > 1) {
       getselfeat().forEach(function (selectedSegment) {
         var segmentId = selectedSegment.id;
         var segment = sdk.DataModel.Segments.getById({ segmentId: segmentId });
-        ja_log('Checking ' + segmentId + ' for double turns ...', 2);
+        ja_log('Checking ' + segmentId + ' for double turns ...', 3);
 
         var len = ja_segment_length(segment);
-        ja_log('Segment ' + segmentId + ' length: ' + len, 2);
+        ja_log('Segment ' + segmentId + ' length: ' + len, 3);
 
-        if (Math.round(len) <= 15) {
+        var lenRounded = Math.round(len);
+        if (lenRounded <= 49) {
           var fromNode = sdk.DataModel.Nodes.getById({ nodeId: segment.fromNodeId });
           var toNode = sdk.DataModel.Nodes.getById({ nodeId: segment.toNodeId });
           var a_from = ja_getAngleMidleSeg(segment.fromNodeId, segment);
@@ -502,7 +503,7 @@
             if (!ja_is_up_to_primary_road(fromSegment)) return;
             var from_a = ja_getAngle(segment.fromNodeId, fromSegment);
             var from_angle = ja_angle_diff(from_a, a_from, false);
-            ja_log('Segment from ' + fromSegmentId + ' angle: ' + from_a + ', turn angle: ' + from_angle, 2);
+            ja_log('Segment from ' + fromSegmentId + ' angle: ' + from_a + ', turn angle: ' + from_angle, 3);
 
             toNode.connectedSegmentIds.forEach(function (toSegmentId) {
               if (toSegmentId === segmentId) return;
@@ -510,19 +511,21 @@
               if (!ja_is_up_to_primary_road(toSegment)) return;
               var to_a = ja_getAngle(segment.toNodeId, toSegment);
               var to_angle = ja_angle_diff(to_a, a_to, false);
-              ja_log('Segment to ' + toSegmentId + ' angle: ' + to_a + ', turn angle: ' + to_angle, 2);
+              ja_log('Segment to ' + toSegmentId + ' angle: ' + to_a + ', turn angle: ' + to_angle, 3);
 
               var angle = Math.abs(to_angle - from_angle);
-              ja_log('Angle from ' + fromSegmentId + ' to ' + toSegmentId + ' is: ' + angle, 2);
+              ja_log('Angle from ' + fromSegmentId + ' to ' + toSegmentId + ' is: ' + angle, 3);
 
               //Determine whether a turn is disallowed
               if (angle >= 175 - GRAY_ZONE && angle <= 185 + GRAY_ZONE) {
                 var turn_type = angle >= 175 + GRAY_ZONE && angle <= 185 - GRAY_ZONE ? ja_routing_type.NO_U_TURN : ja_routing_type.PROBLEM;
 
-                if (ja_is_turn_allowed(fromSegment, fromNode, segment) && ja_is_turn_allowed(segment, toNode, toSegment)) {
+                if (ja_is_turn_allowed(fromSegment, fromNode, segment) && ja_is_turn_allowed(segment, toNode, toSegment) &&
+                    (lenRounded <= 30 || ja_segment_has_lane_guidance(fromSegmentId, fromNode.id, segmentId))) {
                   doubleTurns.collect(segmentId, fromSegmentId, toSegmentId, angle, turn_type);
                 }
-                if (ja_is_turn_allowed(toSegment, toNode, segment) && ja_is_turn_allowed(segment, fromNode, fromSegment)) {
+                if (ja_is_turn_allowed(toSegment, toNode, segment) && ja_is_turn_allowed(segment, fromNode, fromSegment) &&
+                    (lenRounded <= 30 || ja_segment_has_lane_guidance(toSegmentId, toNode.id, segmentId))) {
                   doubleTurns.collect(segmentId, toSegmentId, fromSegmentId, angle, turn_type);
                 }
               }
@@ -533,7 +536,7 @@
     }
 
     ja_log('Collected double-turn segments:', 2);
-    ja_log(doubleTurns.data, 2);
+    ja_log(doubleTurns.data, 4);
     return doubleTurns;
   }
 
@@ -570,25 +573,23 @@
 
       if (node == null) {
         //Oh oh.. should not happen? We want to use a node that does not exist
-        ja_log('Oh oh.. should not happen?', 2);
-        ja_log(node, 2);
-        ja_log(ja_nodes[i], 2);
+        ja_log('[draw_node_markers] Null node at index ' + i + ' — should not happen', 1);
         continue;
       }
       //check connected segments
       var ja_current_node_segments = node.connectedSegmentIds;
       // EPSG:3857 projected units = cos(lat) × true meters; correct so turf distances match OL originals
       var ja_ld = ja_label_distance * Math.cos((node.geometry.coordinates[1] * Math.PI) / 180);
-      ja_log(node, 2);
+      ja_log(node, 4);
 
       //ignore of we have less than 2 segments
       if (ja_current_node_segments.length <= 1) {
-        ja_log('Found only ' + ja_current_node_segments.length + ' connected segments at ' + ja_nodes[i] + ', not calculating anything...', 2);
+        ja_log('Found only ' + ja_current_node_segments.length + ' connected segments at ' + ja_nodes[i] + ', not calculating anything...', 3);
         continue;
       }
 
       ja_log('Calculating angles for ' + ja_current_node_segments.length + ' segments', 2);
-      ja_log(ja_current_node_segments, 3);
+      ja_log(ja_current_node_segments, 4);
 
       ja_current_node_segments.forEach(function (nodeSegment, j) {
         var s = sdk.DataModel.Segments.getById({ segmentId: nodeSegment });
@@ -605,7 +606,7 @@
           restart = true;
         }
         a = ja_getAngle(ja_nodes[i], s);
-        ja_log('Segment ' + nodeSegment + ' angle is ' + a, 2);
+        ja_log('Segment ' + nodeSegment + ' angle is ' + a, 3);
         angles[j] = [a, nodeSegment, s == null ? false : ja_is_segment_selected(nodeSegment)];
         if (s == null ? false : ja_is_segment_selected(nodeSegment)) {
           ja_selected_segments_count++;
@@ -653,7 +654,7 @@
         }
 
         if (Math.abs(a) > 120) {
-          ja_log('Sharp angle', 2);
+          ja_log('Sharp angle', 3);
           ja_extra_space_multiplier = 2;
         }
 
@@ -668,8 +669,8 @@
         var ja_junction_type = ja_routing_type.TURN; //Default to old behavior
 
         if (ja_getOption('guess')) {
-          ja_log(ja_selected_angles, 2);
-          ja_log(angles, 2);
+          ja_log(ja_selected_angles, 4);
+          ja_log(angles, 4);
           ja_junction_type = ja_guess_routing_instruction(node, ja_selected_angles[0][1], ja_selected_angles[1][1], angles);
           ja_log('Type is: ' + ja_junction_type, 2);
         }
@@ -686,8 +687,8 @@
         angles.sort(function (a, b) {
           return a[0] - b[0];
         });
-        ja_log(angles, 3);
-        ja_log(ja_selected_segments_count, 3);
+        ja_log(angles, 4);
+        ja_log(ja_selected_segments_count, 4);
 
         //get all segment angles
         angles.forEach(function (angle, j) {
@@ -700,17 +701,17 @@
           //Show only one angle for nodes with only 2 connected segments and a single selected segment
           // (not on both sides). Skipping the one > 180
           if (ja_selected_segments_count === 1 && angles.length === 2 && a >= 180 && ja_getOption('angleMode') !== 'aDeparture') {
-            ja_log('Skipping marker, as we need only one of them', 2);
+            ja_log('Skipping marker, as we need only one of them', 3);
             return;
           }
           if (ja_getOption('angleMode') === 'aDeparture' && ja_selected_segments_count > 0) {
             if (a_in[1] === angle[1]) {
-              ja_log('in == out. skipping.', 2);
+              ja_log('in == out. skipping.', 3);
               return;
             }
-            ja_log('Angle in:', 2);
-            ja_log(a_in, 2);
-            ja_log(ja_guess_routing_instruction(node, a_in[1], angle[1], angles), 2);
+            ja_log('Angle in:', 3);
+            ja_log(a_in, 4);
+            ja_log(ja_guess_routing_instruction(node, a_in[1], angle[1], angles), 3);
             //FIXME: we might want to try to keep the marker on the segment, instead of just
             //in the direction of the first part
             ha = angle[0];
@@ -827,10 +828,10 @@
           case 'venue':
             break;
           default:
-            ja_log('Found unknown item type: ' + element.type, 2);
+            ja_log('Found unknown item type: ' + element.type, 1);
             break;
         }
-        ja_log(ja_nodes, 2);
+        ja_log(ja_nodes, 4);
       });
     }
 
@@ -945,7 +946,7 @@
     }
 
     angle = ja_angle_diff(s_in_a[0], s_out_a[0], false);
-    ja_log('turn angle is: ' + angle, 2);
+    ja_log('turn angle is: ' + angle, 3);
 
     if (!ja_is_turn_allowed(s_in, node, s_out[s_out_id])) {
       ja_log('Turn is disallowed!', 2);
@@ -989,7 +990,7 @@
             ja_log('turn opcode override is: ' + opcode, 2);
             return ja_routing_type.OverrideU_TURN;
           default:
-            ja_log('no turn opcode override', 2);
+            ja_log('no turn opcode override', 3);
         }
       }
     }
@@ -1012,7 +1013,7 @@
       ja_log('Angle is >= 170 - U-Turn', 2);
       return ja_routing_type.U_TURN;
     } else if (Math.abs(angle) > U_TURN_ANGLE - GRAY_ZONE) {
-      ja_log('Angle is in gray zone 169-171', 2);
+      ja_log('Angle is in gray zone 169-171', 3);
       return ja_routing_type.PROBLEM;
     }
 
@@ -1024,7 +1025,7 @@
     var isLeftHand = (sdk.DataModel.Countries.getAll()[0] || {}).isLeftHandTraffic || false;
 
     if (Math.abs(angle) < TURN_ANGLE - GRAY_ZONE) {
-      ja_log('Turn is <= 44', 2);
+      ja_log('Turn is <= 44', 3);
 
       angles = angles.filter(function (a) {
         if (s_out_id === a[1] || (typeof s_n[a[1]] !== 'undefined' && ja_is_turn_allowed(s_in, node, s_n[a[1]]) && Math.abs(ja_angle_diff(s_in_a, a[0], false)) < TURN_ANGLE)) {
@@ -1127,7 +1128,7 @@
 
       return isLeftHand ? ja_routing_type.KEEP_LEFT : ja_routing_type.KEEP_RIGHT;
     } else if (Math.abs(angle) < TURN_ANGLE + GRAY_ZONE) {
-      ja_log('Angle is in gray zone 44-46', 2);
+      ja_log('Angle is in gray zone 44-46', 3);
       return ja_routing_type.PROBLEM;
     } else {
       ja_log('Normal turn', 2);
@@ -1171,7 +1172,7 @@
     ) {
       //add 1/4 of the original distance and hope for the best =)
       ja_tmp_distance += ja_label_distance / 4;
-      ja_log('setting distance to ' + ja_tmp_distance, 2);
+      ja_log('setting distance to ' + ja_tmp_distance, 3);
       point = turf.destination(turf.point(node.geometry.coordinates), ja_tmp_distance / 1000, (90 - ha + 360) % 360).geometry;
     }
     ja_log('Distance estimation done', 3);
@@ -1223,7 +1224,7 @@
         case ja_routing_type.OverrideKEEP_RIGHT:
           angleString = (ja_getOption('overrideAngles') ? angleString : '') + ja_arrow.right_up();
         default:
-          ja_log('No extra format for junction type: ' + ja_junction_type, 2);
+          ja_log('No extra format for junction type: ' + ja_junction_type, 3);
       }
     } else {
       switch (ja_junction_type) {
@@ -1273,14 +1274,14 @@
           angleString = ja_arrow.right_up() + (ja_getOption('overrideAngles') ? '\n' + angleString : '');
           break;
         default:
-          ja_log('No extra format for junction type: ' + ja_junction_type, 2);
+          ja_log('No extra format for junction type: ' + ja_junction_type, 3);
       }
     }
 
     var angleProps = withRouting
       ? { angle: angleString, ja_type: ja_junction_type, ja_is_far_turn: !!isFarTurn }
       : { angle: ja_round(a) + '°', ja_type: 'generic' };
-    ja_log(angleProps, 3);
+    ja_log(angleProps, 4);
 
     //Don't paint points inside an overlaid roundabout
     if (
@@ -1389,17 +1390,17 @@
    * @returns {boolean} True if any segment in the array shares segment_in's road type.
    */
   function ja_segment_type_match(segment_in, segments) {
-    ja_log(segment_in, 2);
-    ja_log(segments, 2);
+    ja_log(segment_in, 4);
+    ja_log(segments, 4);
 
     return Object.getOwnPropertyNames(segments).some(function (segment_n_id, index) {
       var segment_n = segments[segment_n_id];
-      ja_log('PT Checking element ' + index, 2);
-      ja_log(segment_n, 2);
+      ja_log('[segment_type_match] Checking element ' + index, 3);
+      ja_log(segment_n, 4);
       if (segment_n.id === segment_in.id) {
         return false;
       }
-      ja_log('PT checking sn.rt ' + segment_n.roadType + ' vs i.pt: ' + segment_in.roadType, 2);
+      ja_log('[segment_type_match] roadType ' + segment_n.roadType + ' vs ' + segment_in.roadType, 4);
       return segment_n.roadType === segment_in.roadType;
     });
   }
@@ -1426,7 +1427,7 @@
    */
   function ja_is_up_to_primary_road(seg) {
     var t = seg.roadType;
-    return t === ja_road_type.FREEWAY || t === ja_road_type.RAMP || t === ja_road_type.MAJOR_HIGHWAY || t === ja_road_type.MINOR_HIGHWAY || t === ja_road_type.PRIMARY_STREET;
+    return t === ja_road_type.FREEWAY || t === ja_road_type.RAMP || t === ja_road_type.MAJOR_HIGHWAY || t === ja_road_type.MINOR_HIGHWAY || t === ja_road_type.PRIMARY_STREET || t === ja_road_type.STREET;
   }
 
   /**
@@ -1438,6 +1439,30 @@
   function ja_is_ramp(seg) {
     var t = seg.roadType;
     return t === ja_road_type.RAMP;
+  }
+
+  /**
+   * Returns true if the turn from segmentId at nodeId toward toSegmentId has
+   * lane guidance configured (turn.lanes !== null).
+   *
+   * Per the Waze U-turn spec, a median 31–49 m long qualifies for double-turn
+   * detection only when the incoming segment has lane guidance set up on its
+   * approach to the median junction node.
+   *
+   * @param {number} segmentId - ID of the incoming segment.
+   * @param {number} nodeId - ID of the junction node shared with the median.
+   * @param {number} toSegmentId - ID of the median segment.
+   * @returns {boolean}
+   */
+  function ja_segment_has_lane_guidance(segmentId, nodeId, toSegmentId) {
+    var turns = sdk.DataModel.Turns.getTurnsFromSegment({ segmentId: segmentId, nodeId: nodeId });
+    if (!turns) return false;
+    for (var i = 0; i < turns.length; i++) {
+      if (turns[i].toSegmentId === toSegmentId && turns[i].lanes !== null) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1478,16 +1503,16 @@
    * @returns {boolean}
    */
   function ja_cross_name_match(street_in, streets) {
-    ja_log('CN: init', 2);
-    ja_log(street_in, 2);
-    ja_log(streets, 2);
+    ja_log('[cross_name_match] checking exit streets', 3);
+    ja_log(street_in, 4);
+    ja_log(streets, 4);
     return Object.getOwnPropertyNames(streets).some(function (street_n_id, index) {
       var street_n_element = streets[street_n_id];
-      ja_log('CN: Checking element ' + index, 2);
-      ja_log(street_n_element, 2);
+      ja_log('[cross_name_match] Checking element ' + index, 3);
+      ja_log(street_n_element, 4);
       return (
         street_in.secondary.some(function (street_in_secondary) {
-          ja_log('CN2a: checking n.p: ' + street_n_element.primary.name + ' vs in.s: ' + street_in_secondary.name, 2);
+          ja_log('CN2a: checking n.p: ' + street_n_element.primary.name + ' vs in.s: ' + street_in_secondary.name, 4);
 
           //wlodek76: CROSS-MATCH works when two compared segments contain at least one ALT NAME
           //when alt name is empty cross-match does not work
@@ -1497,7 +1522,7 @@
           return street_n_element.primary.name === street_in_secondary.name;
         }) ||
         street_n_element.secondary.some(function (street_n_secondary) {
-          ja_log('CN2b: checking in.p: ' + street_in.primary.name + ' vs n.s: ' + street_n_secondary.name, 2);
+          ja_log('CN2b: checking in.p: ' + street_in.primary.name + ' vs n.s: ' + street_n_secondary.name, 4);
 
           //wlodek76: CROSS-MATCH works when two compared segments contain at least one ALT NAME
           //when alt name is empty cross-match does not work
@@ -1527,8 +1552,8 @@
   function ja_alt_name_match(street_in, streets) {
     return Object.getOwnPropertyNames(streets).some(function (street_n_id, index) {
       var street_n_element = streets[street_n_id];
-      ja_log('AN alt name check: Checking element ' + index, 2);
-      ja_log(street_n_element, 2);
+      ja_log('[alt_name_match] Checking element ' + index, 3);
+      ja_log(street_n_element, 4);
 
       if (street_in.secondary.length === 0) {
         return false;
@@ -1538,10 +1563,10 @@
       }
 
       return street_in.secondary.some(function (street_in_secondary, index2) {
-        ja_log('AN2 checking element ' + index2, 2);
-        ja_log(street_in_secondary, 2);
+        ja_log('[alt_name_match] Nested check element ' + index2, 3);
+        ja_log(street_in_secondary, 4);
         return street_n_element.secondary.some(function (street_n_secondary_element, index3) {
-          ja_log('AN3 Checking in.s: ' + street_in_secondary.name + ' vs n.s.' + index3 + ': ' + street_n_secondary_element.name, 2);
+          ja_log('[alt_name_match] in.secondary: ' + street_in_secondary.name + ' vs n.secondary[' + index3 + ']: ' + street_n_secondary_element.name, 4);
           return street_in_secondary.name === street_n_secondary_element.name;
         });
       });
@@ -1561,13 +1586,13 @@
    * @returns {boolean} True if a primary-name match is found.
    */
   function ja_primary_name_match(street_in, streets) {
-    ja_log('PN', 2);
-    ja_log(street_in, 2);
-    ja_log(streets, 2);
+    ja_log('[primary_name_match] checking candidates', 3);
+    ja_log(street_in, 4);
+    ja_log(streets, 4);
     return Object.getOwnPropertyNames(streets).some(function (id, index, array) {
       var element = streets[id];
-      ja_log('PN Checking element ' + index + ' of ' + array.length, 2);
-      ja_log(element, 2);
+      ja_log('[primary_name_match] Checking element ' + index + ' of ' + array.length, 3);
+      ja_log(element, 4);
       return element.primary.name === street_in.primary.name;
     });
   }
@@ -1872,8 +1897,8 @@
    *   null.
    */
   function ja_getAngle(ja_node, ja_segment) {
-    ja_log('node: ' + ja_node, 2);
-    ja_log('segment: ' + ja_segment, 2);
+    ja_log('[getAngle] node: ' + ja_node, 4);
+    ja_log('[getAngle] segment: ' + ja_segment, 4);
     if (ja_node == null || ja_segment == null) {
       return null;
     }
@@ -1905,8 +1930,8 @@
    *   null.
    */
   function ja_getAngleMidleSeg(ja_node, ja_segment) {
-    ja_log('node: ' + ja_node, 2);
-    ja_log('segment: ' + ja_segment, 2);
+    ja_log('[getAngleMidleSeg] node: ' + ja_node, 4);
+    ja_log('[getAngleMidleSeg] segment: ' + ja_segment, 4);
     if (ja_node == null || ja_segment == null) {
       return null;
     }
@@ -2123,7 +2148,7 @@
       // the segment appears in any BigJunction.segmentIds[]. It's a method on the Segments
       // collection class, not a property on the segment object itself.
       if (sdk.DataModel.Segments.isContainedInBigJunction({ segmentId: segId })) {
-        ja_log('[FAR-TURNS] Skipping segId ' + segId + ' — isContainedInBigJunction (median segment)', 2);
+        ja_log('[FAR-TURNS] Skipping segId ' + segId + ' — isContainedInBigJunction (median segment)', 3);
         return;
       }
 
@@ -2299,14 +2324,18 @@
         //   no JB restriction interference, so full BC/KEEP/EXIT/TURN classification works).
         //
         // JUNCTION BOX TURNS (isJunctionBoxTurn)
-        //   DISPLAY ANGLE — 2-step algorithm (mirrors Waze instruction selection):
-        //   • step1 = entryAngle → firstExitAngle (angle at entry node into first internal seg)
-        //   • step2 = lastPathAngle → exitAngle   (local angle at connecting node → exit seg)
-        //   • Use step1 if |step1| ≥ TURN_ANGLE threshold (~44°) — instruction fires at
-        //     entry node (Case A). Step1 is shared by ALL exits from the same segmentPath[0],
-        //     so it only applies when it actually indicates a real (non-BC) turn.
-        //   • Else use step2 — instruction fires at connecting node (Case B). Step2 is unique
-        //     per exit segment, giving distinct angles when multiple exits share segmentPath[0].
+        //   DISPLAY ANGLE — n-step walk (mirrors Waze instruction selection):
+        //   Walk every node in pathSegs from entry to connecting. Use the first node
+        //   where |angle| ≥ TURN_ANGLE threshold (~44°) — that is the node where Waze
+        //   fires the routing instruction. Fall back to the connecting-node angle (step2)
+        //   if no node clears the threshold (all straight/BC → instruction is BC).
+        //
+        //   Case A: entry node angle ≥ 44° → use it (walk breaks at i=0)
+        //   Case B: connecting node angle ≥ 44° → use it (walk reaches last i)
+        //   Case C: intermediate node angle ≥ 44° → use it (walk breaks at i=1..N-2)
+        //           e.g. at-grade connector entering a JB: BC entry → LT middle → BC exit
+        //   Fallback: all nodes < 44° → step2 (connecting node, BC instruction)
+        //
         //   Display angle and type always use the same selected turnAngle.
         //
         //   TYPE CLASSIFICATION — ja_guess_routing_instruction at the connecting node (first),
@@ -2326,21 +2355,35 @@
             ? ja_angle_diff(lastPathAngle, exitAngle, false)
             : ja_angle_diff(entryAngle, exitAngle, false); // fallback if lastPathAngle unavailable
         } else {
-          // JB: 2-step — use step1 if it would produce a real (non-BC) instruction,
-          // otherwise fall back to step2. Display AND type both use the selected angle
-          // so that the shown angle matches the color.
+          // JB: n-step walk — scan every node in the path from entry to connecting.
+          // Use the first node where |angle| >= TURN_ANGLE threshold (~44°), which is
+          // the node where Waze fires the routing instruction. Fall back to the connecting
+          // node angle (step2) if no node clears the threshold.
           //
-          // step1 = entryAngle → firstExitAngle (same for all exits sharing segmentPath[0])
-          // step2 = lastPathAngle → exitAngle   (unique per exit)
+          // This generalises the old 2-step (entry / connecting) to handle paths with
+          // intermediate turns — e.g. a 3-node JB where the real left/right turn is at
+          // the middle node while both the entry and connecting nodes are straight (BC).
           //
-          // "BC at the local turn level" = |step1| < TURN_ANGLE threshold (< ~44°).
-          // When step1 is BC, Waze fires at the connecting node using step2 instead.
-          var jbStep1Angle = ja_angle_diff(entryAngle, firstExitAngle, false);
-          var jbStep2Angle = (lastPathAngle != null)
+          // pathSegs = [fromSeg, segmentPath[0], …, segmentPath[last], toSeg]
+          // — already built and validated by the restriction walk above.
+          //
+          // Default to step2 (connecting node); overwritten below if an earlier node
+          // produces a non-BC angle.
+          turnAngle = (lastPathAngle != null)
             ? ja_angle_diff(lastPathAngle, exitAngle, false)
-            : jbStep1Angle; // fallback if lastPathSeg bearing unavailable
-          // Use step1 only if it's a meaningful turn (TURN or above); else use step2.
-          turnAngle = Math.abs(jbStep1Angle) >= TURN_ANGLE - GRAY_ZONE ? jbStep1Angle : jbStep2Angle;
+            : ja_angle_diff(entryAngle, firstExitAngle, false); // last-resort if connecting segs unloaded
+          for (var ni = 0; ni < pathSegs.length - 1; ni++) {
+            var niNodeId  = ja_get_connecting_node(pathSegs[ni], pathSegs[ni + 1]);
+            if (niNodeId == null) continue;
+            var niInAngle  = ja_getAngle(niNodeId, pathSegs[ni]);
+            var niOutAngle = ja_getAngle(niNodeId, pathSegs[ni + 1]);
+            if (niInAngle == null || niOutAngle == null) continue;
+            var niAngle = ja_angle_diff(niInAngle, niOutAngle, false);
+            if (Math.abs(niAngle) >= TURN_ANGLE - GRAY_ZONE) {
+              turnAngle = niAngle;
+              break;
+            }
+          }
         }
 
         var farTurnType;
@@ -2398,12 +2441,20 @@
                   }
                 });
                 var jbGuessed = ja_guess_routing_instruction(jbConnNode_obj, lastPathSegId, turn.toSegmentId, jbConnAngles);
-                if (jbGuessed !== ja_routing_type.NO_TURN) {
+                // Use the ja_guess result UNLESS it says BC while the display angle is a
+                // real turn. This catches Case C (intermediate-node turn): the connecting
+                // node turn is genuinely BC (allowed, but straight), so ja_guess correctly
+                // returns BC — but the instruction fires at an earlier node with a large
+                // angle. Trusting BC here would produce a white marker for a left/right turn.
+                var jbGuessBcConflict = jbGuessed === ja_routing_type.BC
+                  && Math.abs(turnAngle) >= TURN_ANGLE - GRAY_ZONE;
+                if (jbGuessed !== ja_routing_type.NO_TURN && !jbGuessBcConflict) {
                   farTurnType = jbGuessed;
                 }
               }
               // Angle-based fallback: used when ja_guess returns NO_TURN (JB internal
-              // restriction at connecting node) or when connectingNode is not loaded.
+              // restriction at connecting node), when the BC-conflict override fires
+              // (Case C intermediate turn), or when connectingNode is not loaded.
               if (!farTurnType) {
                 var absAngle = Math.abs(turnAngle);
                 if (absAngle > U_TURN_ANGLE + GRAY_ZONE) {
@@ -2485,10 +2536,10 @@
               ja_log('[FAR-TURNS] Using JB boundary crossing for far turn ' + turn.id
                 + ' at ' + JSON.stringify(closestPt.geometry.coordinates), 2);
             } else {
-              ja_log('[FAR-TURNS] No JB boundary crossing found for far turn ' + turn.id + ' — falling back to connectingNode', 1);
+              ja_log('[FAR-TURNS] No JB boundary crossing found for far turn ' + turn.id + ' — falling back to connectingNode', 2);
             }
           } else {
-            ja_log('[FAR-TURNS] BigJunction not found for far turn ' + turn.id + ' — falling back to connectingNode', 1);
+            ja_log('[FAR-TURNS] BigJunction not found for far turn ' + turn.id + ' — falling back to connectingNode', 2);
           }
         }
 
@@ -2579,20 +2630,20 @@
    * @returns {*} The stored (or default) setting value.
    */
   function ja_getOption(name) {
-    ja_log('Loading option: ' + name, 2);
+    ja_log('Loading option: ' + name, 3);
     if (!ja_options.hasOwnProperty(name) || typeof ja_options[name] === 'undefined') {
       ja_options[name] = ja_settings[name].defaultValue;
     }
     //Check for invalid values
     //Select values
     if (ja_settings[name].elementType === 'select' && ja_settings[name].options.lastIndexOf(ja_options[name]) < 0) {
-      ja_log(ja_settings[name].options, 2);
-      ja_log('Found invalid value for setting ' + name + ': ' + ja_options[name] + '. Using default.', 2);
+      ja_log(ja_settings[name].options, 4);
+      ja_log('Found invalid value for setting ' + name + ': ' + ja_options[name] + '. Using default.', 3);
       ja_options[name] = ja_settings[name].defaultValue;
     }
     //Color values
     else if (ja_settings[name].elementType === 'color' && String(ja_options[name]).match(/#[0-9a-f]{6}/) == null) {
-      ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 2);
+      ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 3);
       ja_options[name] = ja_settings[name].defaultValue;
     }
     //Numeric values
@@ -2600,17 +2651,17 @@
       var minValue = typeof ja_settings[name].min === 'undefined' ? Number.MIN_VALUE : ja_settings[name].min;
       var maxValue = typeof ja_settings[name].max === 'undefined' ? Number.MAX_VALUE : ja_settings[name].max;
       if (isNaN(ja_options[name]) || ja_options[name] < minValue || ja_options[name] > maxValue) {
-        ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 2);
+        ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 3);
         ja_options[name] = ja_settings[name].defaultValue;
       }
     }
     //Checkboxes
     else if (ja_settings[name].elementType === 'checkbox' && ja_options[name] !== true && ja_options[name] !== false) {
-      ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 2);
+      ja_log('Found invalid value for setting ' + name + ': "' + ja_options[name] + '". Using default.', 3);
       ja_options[name] = ja_settings[name].defaultValue;
     }
 
-    ja_log('Got value: ' + ja_options[name], 2);
+    ja_log('Got value: ' + ja_options[name], 3);
     return ja_options[name];
   }
 
@@ -2655,8 +2706,8 @@
       ja_log(ja_settings[a], 4);
       return ja_settings[a].elementId === e.id;
     })[0];
-    ja_log(e, 3);
-    ja_log(settingName, 3);
+    ja_log(e, 4);
+    ja_log(settingName, 4);
     switch (ja_settings[settingName].elementType) {
       case 'checkbox':
         ja_log('Checkbox setting ' + e.id + ': stored value is: ' + ja_options[settingName] + ', new value: ' + e.checked, 3);
@@ -2727,10 +2778,10 @@
         });
         break;
       default:
-        ja_log('Nothing to do for ' + e.id, 2);
+        ja_log('Nothing to do for ' + e.id, 3);
     }
 
-    ja_log('Apply pending configuration changes? ' + applyPending, 2);
+    ja_log('Apply pending configuration changes? ' + applyPending, 3);
     if (applyPending) {
       ja_log('Applying new settings now', 3);
       setTimeout(function () {
@@ -2750,20 +2801,20 @@
    * finish rendering before populating form controls.
    */
   var ja_load = function loadJAOptions() {
-    ja_log('Should load settings now.', 2);
+    ja_log('Should load settings now.', 3);
     if (localStorage != null) {
-      ja_log('We have local storage! =)', 2);
+      ja_log('We have local storage! =)', 3);
       try {
         ja_options = JSON.parse(localStorage.getItem('wme_ja_options'));
       } catch (e) {
-        ja_log('Loading settings failed.. ' + e.message, 2);
+        ja_log('Loading settings failed.. ' + e.message, 1);
         ja_options = null;
       }
     }
     if (ja_options == null) {
       ja_reset();
     } else {
-      ja_log(ja_options, 2);
+      ja_log(ja_options, 4);
       setTimeout(function () {
         ja_apply();
       }, 500);
@@ -2785,7 +2836,7 @@
     ja_log('Saving settings', 2);
     Object.getOwnPropertyNames(ja_settings).forEach(function (a) {
       var setting = ja_settings[a];
-      ja_log(setting, 2);
+      ja_log(setting, 4);
       switch (setting.elementType) {
         case 'checkbox':
           ja_setOption(a, document.getElementById(setting.elementId).checked);
@@ -2811,7 +2862,7 @@
           ja_setOption(a, document.getElementById(setting.elementId).value);
           break;
         default:
-          ja_log('Unknown setting type ' + setting.elementType, 2);
+          ja_log('Unknown setting type ' + setting.elementType, 1);
       }
     });
     ja_apply();
@@ -2833,21 +2884,21 @@
   var ja_apply = function applyJAOptions() {
     ja_log('Applying stored (or default) settings', 2);
     if (!ja_layer_created) {
-      ja_log('Layer not ready yet, trying again in 400 ms', 2);
+      ja_log('Layer not ready yet, trying again in 400 ms', 3);
       setTimeout(function () {
         ja_apply();
       }, 400);
       return;
     }
     if (document.getElementById('sidepanel-ja') == null) {
-      ja_log('WME not ready (no settings tab)', 2);
+      ja_log('WME not ready (no settings tab)', 3);
     } else {
-      ja_log(Object.getOwnPropertyNames(ja_settings), 2);
+      ja_log(Object.getOwnPropertyNames(ja_settings), 4);
       Object.getOwnPropertyNames(ja_settings).forEach(function (a) {
         var setting = ja_settings[a];
-        ja_log(a, 2);
-        ja_log(setting, 2);
-        ja_log(document.getElementById(setting.elementId), 2);
+        ja_log(a, 4);
+        ja_log(setting, 4);
+        ja_log(document.getElementById(setting.elementId), 4);
         switch (setting.elementType) {
           case 'checkbox':
             document.getElementById(setting.elementId).checked = ja_getOption(a);
@@ -2863,13 +2914,13 @@
             document.getElementById(setting.elementId).onchange(null);
             break;
           default:
-            ja_log('Unknown setting type ' + setting.elementType, 2);
+            ja_log('Unknown setting type ' + setting.elementType, 1);
         }
       });
     }
     // Style driven by ja_build_style_context() closures — recalculate refreshes colors.
     ja_calculate_real();
-    ja_log(ja_options, 2);
+    ja_log(ja_options, 4);
   };
 
   /**
@@ -2921,7 +2972,7 @@
   // (e.g. inside `ja_apply`).
   var ja_calculation_timer = {
     start: function () {
-      ja_log('Starting timer', 2);
+      ja_log('Starting timer', 3);
       this.cancel();
       var ja_calculation_timer_self = this;
       this.timeoutID = setTimeout(function () {
@@ -2937,7 +2988,7 @@
     cancel: function () {
       if (typeof this.timeoutID === 'number') {
         clearTimeout(this.timeoutID);
-        ja_log('Cleared timeout ID : ' + this.timeoutID, 2);
+        ja_log('Cleared timeout ID : ' + this.timeoutID, 3);
         delete this.timeoutID;
       }
     },
@@ -2967,7 +3018,7 @@
    * @returns {'black'|'white'} High-contrast text color.
    */
   function ja_get_contrast_color(hex_color) {
-    ja_log('Parsing YIQ-based contrast color for: ' + hex_color + ' ...', 2);
+    ja_log('Parsing YIQ-based contrast color for: ' + hex_color + ' ...', 3);
     var r = parseInt(hex_color.substring(1, 3), 16);
     var g = parseInt(hex_color.substring(3, 5), 16);
     var b = parseInt(hex_color.substring(5, 7), 16);
@@ -3581,7 +3632,7 @@
       if (typeof ja_log_msg === 'object') {
         console.log(ja_log_msg);
       } else {
-        console.log('WME Junction Angle: ' + ja_log_msg);
+        console.log('WME JAI: ' + ja_log_msg);
       }
     }
   }

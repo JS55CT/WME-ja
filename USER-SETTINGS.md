@@ -47,14 +47,24 @@ When the turn angle between two roads at a node is near 180°, JAI classifies it
 
 ---
 
-### Double-turn via short connector (≤ 15 m)
+### Double-turn via short connector
 
-A "double-turn" occurs when a driver crosses a very short connector segment (≤ 15 m) in a way that the combined heading change across both junctions is near 180°. The driver doesn't make one sharp U-turn — they make two separate turns across a tiny stub — but the net effect is a U-turn path.
+A "double-turn" occurs when a driver crosses a short connector segment (the median) in a way that the combined heading change across both junctions is near 180°. The driver doesn't make one sharp U-turn — they make two separate turns across a short stub — but the net effect is a U-turn path.
+
+JAI qualifies a segment as a potential median using the Waze U-turn spec:
+
+| Connector length | Qualifies? |
+| --- | --- |
+| ≤ 30 m | Always |
+| 31 – 49 m | Only if the **incoming segment** has lane guidance configured on its approach to the connector |
+| ≥ 50 m | Never |
+
+The incoming and outgoing arms of the path must also be Street class or above (Street, Primary Street, Minor Highway, Major Highway, Ramp, or Freeway).
 
 **How to see it:**
 
 1. Switch to **Departure mode**
-2. Select **the short connector segment itself** (not a node, not a longer road)
+2. Select **the connector segment itself** (not a node, not a longer road)
 
 JAI then inspects every road connected at both ends of that connector. For each pair (road-in → connector → road-out) where the combined heading change is ~180° **and both turns are currently allowed**, it places a warning marker:
 
@@ -63,7 +73,7 @@ JAI then inspects every road connected at both ends of that connector. For each 
 | 176.5° – 183.5° | **U-turn** — the path forms a U-turn and there is no restriction to prevent it | Purple |
 | 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°) | Orange |
 
-The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short stub (≤ 15 m) that together add up to a ~180° heading change. The script is telling you that a U-turn is lickly & there is no restriction in place to prevent it.
+The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short connector that together add up to a ~180° heading change. The script is telling you that a U-turn is likely and there is no restriction in place to prevent it.
 
 > **Note:** This check only runs in Departure mode when a segment is selected (giving JAI both endpoint nodes to work with). Selecting just a node, or being in Absolute mode, will not trigger it.
 
@@ -92,7 +102,7 @@ Shows the turn angle **from your selected segment to each possible exit**, with 
 - The number is the **signed turn angle** between your incoming segment and the exit
 - The selected segment itself is skipped (no marker for "straight back")
 - Markers are placed at `ja_label_distance × 2` (further out) directly along the exit road
-- When 2+ nodes are selected, also checks for **double-turn** segments (≤15m connector roads) that could trigger a no-U-turn or problem classification
+- When 2+ nodes are selected, also checks for **double-turn** connector segments (≤30 m always, or 31–49 m with lane guidance) that could trigger a U-turn or problem classification
 
 **Use when:** You are routing through a junction and want to know what instruction each exit will produce.
 
