@@ -117,12 +117,14 @@ Source code and issue tracker: [https://github.com/WazeDev/WME-JAI](https://gith
 
 ## Changelog
 
-### 3.0.1 _(current)_
+### 3.0.X _(current)_
 
-- Migrated from legacy W/OpenLayers APIs to the WME JavaScript SDK
-- Roundabout center-angle marker now reflects per-path normality (white/orange per entry–exit pair)
-- ±N° deviation markers now appear at every oblique exit on any size roundabout
-- Departure-mode markers and ±N° markers are zoom-aware and no longer overlap
+- Rewritten from the ground up for the WME JavaScript SDK (replaces legacy W/OpenLayers API)
+- New: double U-turn detection at H and # intersections — flags ~180° paths across short connector segments (≤30 m, or ≤50 m with incoming lane guidance)
+- New U-Turn detection settings: opt-in Street, Parking Lot Road, and Private Road connectors (all off by default)
+- Roundabout center now shows a Ø diameter marker (white = radius ≤ 25 m / orange = oversized) to flag the radius Non-Normal criterion at a glance
+- ±N° deviation markers now appear at every oblique exit regardless of roundabout size
+- Departure-mode and ±N° markers are now zoom-aware and no longer overlap
 
 ### 2.2.16 _(Feb 6, 2025)_
 
