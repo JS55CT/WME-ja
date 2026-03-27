@@ -292,25 +292,6 @@ JAI draws thin lines from the entry node to the center, and from the center to e
 
 ---
 
-## Roundabout behavior — two-segment path mode
-
-When you select **two external roads** (one entry, one exit) that both connect to the same roundabout, JAI shows a focused view of that one specific path rather than the full entry-exit panorama.
-
-### What is drawn
-
-- **Triangle legs** — thin lines from entry node → center → exit node
-- **Center-angle marker** — the triangle angle at the center, colored by the normality of that specific path only:
-  - **White** — path angle within 15° of perpendicular (90° ± 15°) → Waze Normal roundabout instructions
-  - **Orange** — path angle more than 15° off perpendicular → Waze Non-Normal instructions
-
-- **±N° deviation markers** — placed at every exit node (other than the selected entry) that is not within 15° of perpendicular. The number is the minimum distance from that exit's angle to the nearest 90° boundary.
-
-**When to use this mode:** When you already know which specific path (entry + exit pair) you want to inspect, two-segment mode gives a clean view of just that path's angle and classification with no other exits in view.
-
-> The center marker angle and the ±N° marker at the same exit node are different numbers by design — the center shows the raw triangle angle (e.g. 47°); the ±N° marker shows how far that angle is from perpendicular (e.g. ±43°, because 90° − 47° = 43°).
-
----
-
 ## Roundabout behavior — technical notes
 
 ### How roundabout detection works
