@@ -14,8 +14,7 @@ What you select in WME determines what JAI calculates and how many markers it dr
 | **1 segment (roundabout entry road)** | All exits from that roundabout, classified as Normal or Non-Normal — see [Roundabout entry-exit view](#roundabout-entry-exit-view) |
 | **1 segment (roundabout arc)** | Same as selecting the entry road at that arc's start node — all exits from the roundabout |
 | **1 node** | All adjacent-pair angles at that node (Absolute mode behavior regardless of angle mode setting) |
-| **2 connected segments (no roundabout)** | A single turn-angle marker at the shared junction node, color-coded with the predicted routing instruction |
-| **2 connected segments (entry + exit road through a roundabout)** | Triangle angle at the roundabout center, ±N° deviation markers at oblique exits — see [Two-segment mode](#two-segment-mode) |
+| **2 connected segments** | A single turn-angle marker at the shared junction node, color-coded with the predicted routing instruction |
 | **2 disconnected segments** | Nothing — segments must share a node |
 | **Mixed types or 3+ features** | Nothing |
 
