@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.0.2
+// @version       3.0.3
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -55,10 +55,12 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Migrated from legacy W/OpenLayers APIs to the WME JavaScript SDK',
-    'Roundabout center-angle marker now reflects per-path normality (white/orange per entry–exit pair)',
-    '±N° deviation markers now appear at every oblique exit on any size roundabout',
-    'Departure-mode markers and ±N° markers are zoom-aware and no longer overlap',
+    'Rewritten from the ground up for the WME JavaScript SDK (replaces legacy W/OpenLayers API)',
+    'New: double U-turn detection at H and # intersections — flags ~180° paths across short connector segments (≤30 m, or ≤50 m with incoming lane guidance)',
+    'New U-Turn detection settings: opt-in Street, Parking Lot Road, and Private Road connectors (all off by default)',
+    'Roundabout center now shows a Ø diameter marker (white = radius ≤ 25 m / orange = oversized) to flag the radius Non-Normal criterion at a glance',
+    '±N° deviation markers now appear at every oblique exit regardless of roundabout size',
+    'Departure-mode and ±N° markers are now zoom-aware and no longer overlap',
   ];
   const SCRIPT_VERSION = GM_info.script.version.toString();
   const DOWNLOAD_URL = 'https://update.greasyfork.org/scripts/35547/WME%20Junction%20Angle%20Info.user.js';
@@ -191,6 +193,9 @@
     roundaboutOverlayDisplay: { elementType: 'select', elementId: '_jaSelRoundaboutOverlayDisplay', defaultValue: 'rOverNever', options: ['rOverNever', 'rOverSelected', 'rOverAlways'] },
     roundaboutOverlayColor: { elementType: 'color', elementId: '_jaTbRoundaboutOverlayColor', defaultValue: '#aa0000', group: 'roundaboutOverlayDisplay' },
     roundaboutColor: { elementType: 'color', elementId: '_jaTbRoundaboutColor', defaultValue: '#ff8000', group: 'roundaboutOverlayDisplay' },
+    uTurnIncludeStreet: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludeStreet', defaultValue: false },
+    uTurnIncludeParkingLot: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludeParkingLot', defaultValue: false },
+    uTurnIncludePrivateRoad: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludePrivateRoad', defaultValue: false },
     decimals: { elementType: 'number', elementId: '_jaTbDecimals', defaultValue: 2, min: 0, max: 2 },
     pointSize: { elementType: 'number', elementId: '_jaTbPointSize', defaultValue: 12, min: 6, max: 20 },
   };
@@ -385,8 +390,24 @@
         ja_log(ja_selected_roundabouts[tmp_roundabout], 3);
 
         //New roundabouts don't have coordinates yet..
-        if (typeof ja_selected_roundabouts[tmp_roundabout].p === 'undefined' || ja_selected_roundabouts[tmp_roundabout].out_n === null) {
+        if (typeof ja_selected_roundabouts[tmp_roundabout].p === 'undefined') {
           continue;
+        }
+        // Entry-only selection (no exit node in selection): show all exits relative to entry
+        if (ja_selected_roundabouts[tmp_roundabout].out_n === null) {
+          ja_draw_roundabout_entry_exits(tmp_roundabout_id, ja_selected_roundabouts[tmp_roundabout].in_n, ja_label_distance);
+          continue;
+        }
+
+        // Roundabout arc selected: treat fromNode (in_n) as the entry point and show all
+        // exits — same view as selecting an entry segment connected at that same node.
+        var _selfeat = getselfeat();
+        if (_selfeat.length === 1 && _selfeat[0].type === 'segment') {
+          var _selSeg = sdk.DataModel.Segments.getById({ segmentId: _selfeat[0].id });
+          if (_selSeg && _selSeg.junctionId !== null) {
+            ja_draw_roundabout_entry_exits(tmp_roundabout_id, ja_selected_roundabouts[tmp_roundabout].in_n, ja_label_distance);
+            continue;
+          }
         }
 
         //Draw circle overlay for this roundabout
@@ -490,6 +511,7 @@
 
         var len = ja_segment_length(segment);
         ja_log('Segment ' + segmentId + ' length: ' + len, 3);
+        if (!ja_is_uturn_qualifying_road(segment)) return;
 
         var lenRounded = Math.round(len);
         if (lenRounded <= 49) {
@@ -501,7 +523,7 @@
           fromNode.connectedSegmentIds.forEach(function (fromSegmentId) {
             if (fromSegmentId === segmentId) return;
             var fromSegment = sdk.DataModel.Segments.getById({ segmentId: fromSegmentId });
-            if (!ja_is_up_to_primary_road(fromSegment)) return;
+            if (!ja_is_uturn_qualifying_road(fromSegment)) return;
             var from_a = ja_getAngle(segment.fromNodeId, fromSegment);
             var from_angle = ja_angle_diff(from_a, a_from, false);
             ja_log('Segment from ' + fromSegmentId + ' angle: ' + from_a + ', turn angle: ' + from_angle, 3);
@@ -509,7 +531,7 @@
             toNode.connectedSegmentIds.forEach(function (toSegmentId) {
               if (toSegmentId === segmentId) return;
               var toSegment = sdk.DataModel.Segments.getById({ segmentId: toSegmentId });
-              if (!ja_is_up_to_primary_road(toSegment)) return;
+              if (!ja_is_uturn_qualifying_road(toSegment)) return;
               var to_a = ja_getAngle(segment.toNodeId, toSegment);
               var to_angle = ja_angle_diff(to_a, a_to, false);
               ja_log('Segment to ' + toSegmentId + ' angle: ' + to_a + ', turn angle: ' + to_angle, 3);
@@ -544,7 +566,7 @@
       getselfeat().forEach(function (selectedSegment) {
         var armId = selectedSegment.id;
         var armSeg = sdk.DataModel.Segments.getById({ segmentId: armId });
-        if (!ja_is_up_to_primary_road(armSeg)) return;
+        if (!ja_is_uturn_qualifying_road(armSeg)) return;
 
         [armSeg.fromNodeId, armSeg.toNodeId].forEach(function (armNodeId) {
           var armNode = sdk.DataModel.Nodes.getById({ nodeId: armNodeId });
@@ -554,6 +576,7 @@
             if (selectedIds[neighborId]) return; // already handled as direct median selection
 
             var neighbor = sdk.DataModel.Segments.getById({ segmentId: neighborId });
+            if (!ja_is_uturn_qualifying_road(neighbor)) return;
             var nLen = Math.round(ja_segment_length(neighbor));
             if (nLen > 49) return;
             if (nLen > 30 && !ja_segment_has_lane_guidance(armId, armNodeId, neighborId)) return;
@@ -570,7 +593,7 @@
             medianFarNode.connectedSegmentIds.forEach(function (exitId) {
               if (exitId === neighborId) return;
               var exitSeg = sdk.DataModel.Segments.getById({ segmentId: exitId });
-              if (!ja_is_up_to_primary_road(exitSeg)) return;
+              if (!ja_is_uturn_qualifying_road(exitSeg)) return;
               if (!ja_is_turn_allowed(neighbor, medianFarNode, exitSeg)) return;
 
               var exit_a = ja_getAngle(medianFarNodeId, exitSeg);
@@ -912,7 +935,19 @@
     var ja_label_distance = ja_compute_label_distance();
     var ja_selected_roundabouts = ja_find_roundabouts(ja_nodes);
     ja_draw_roundabout_markers(ja_selected_roundabouts, ja_label_distance);
-    var doubleTurns = ja_collect_double_turns(ja_nodes);
+
+    // When a single roundabout arc is selected, ja_draw_roundabout_entry_exits already shows
+    // all exit info relative to the arc's fromNode. Suppress ja_draw_node_markers so the
+    // regular intersection-style angles don't fire on the roundabout's own nodes.
+    var ja_marker_nodes = ja_nodes;
+    if (ja_selfeat.length === 1 && ja_selfeat[0].type === 'segment') {
+      var _arcSeg = sdk.DataModel.Segments.getById({ segmentId: ja_selfeat[0].id });
+      if (_arcSeg && _arcSeg.junctionId !== null) {
+        ja_marker_nodes = [];
+      }
+    }
+
+    var doubleTurns = ja_collect_double_turns(ja_marker_nodes);
 
     // True if any selected segment is contained inside a BigJunction (a median/intermediate
     // segment). In that case ja_draw_node_markers suppresses far-turn markers: the regular
@@ -932,7 +967,7 @@
       .filter(function (feat) { return feat.type === 'segment'; })
       .map(function (feat) { return feat.id; });
 
-    if (ja_draw_node_markers(ja_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids)) {
+    if (ja_draw_node_markers(ja_marker_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids)) {
       return;
     }
 
@@ -1491,17 +1526,21 @@
   }
 
   /**
-   * Returns true if the segment is a primary street or any higher-class road.
-   *
-   * Used to filter which segments qualify as "through roads" when detecting
-   * double-turn connector segments.
-   *
+   * Returns true if the segment qualifies for double U-turn detection.
+   * Primary Street and above are always included. Street, Parking Lot Road, and
+   * Private Road are opt-in via the U-Turn detection settings.
    * @param {Object} seg - SDK Segment object.
    * @returns {boolean}
    */
-  function ja_is_up_to_primary_road(seg) {
+  function ja_is_uturn_qualifying_road(seg) {
     var t = seg.roadType;
-    return t === ja_road_type.FREEWAY || t === ja_road_type.RAMP || t === ja_road_type.MAJOR_HIGHWAY || t === ja_road_type.MINOR_HIGHWAY || t === ja_road_type.PRIMARY_STREET || t === ja_road_type.STREET;
+    if (t === ja_road_type.FREEWAY || t === ja_road_type.RAMP ||
+        t === ja_road_type.MAJOR_HIGHWAY || t === ja_road_type.MINOR_HIGHWAY ||
+        t === ja_road_type.PRIMARY_STREET) return true;
+    if (t === ja_road_type.STREET && ja_getOption('uTurnIncludeStreet')) return true;
+    if (t === ja_road_type.PARKING_LOT_ROAD && ja_getOption('uTurnIncludeParkingLot')) return true;
+    if (t === ja_road_type.PRIVATE_ROAD && ja_getOption('uTurnIncludePrivateRoad')) return true;
+    return false;
   }
 
   /**
@@ -1898,6 +1937,250 @@
       }
     }
     return is_normal;
+  }
+
+  /**
+   * Draws exit-angle markers for all valid exits of a roundabout when only the entry segment
+   * is selected (no specific exit node in the selection).
+   *
+   * Applies the full Waze Normal / Non-Normal roundabout instruction rules:
+   *
+   * Normal (all three criteria must be met for this entry):
+   *   1. All exit angles within ±15° of a multiple of 90° (perpendicular exits)
+   *   2. Total junction node count is 2–4
+   *   3. Roundabout radius ≤ 25 m
+   *   → Each exit is classified as Turn Right / Continue Straight / Turn Left / U-Turn
+   *     based on the counterclockwise angle from the entry bearing to the exit bearing
+   *     (measured at the roundabout center).  Colors use the matching ja_routing_type.
+   *
+   * Non-Normal (any criterion fails):
+   *   → All exits are labeled "1st", "2nd", "3rd" … in the order they are encountered
+   *     when travelling counterclockwise from the entry, using ja_routing_type.ROUNDABOUT (the
+   *     "Non-Normal Exit Color" setting — roundaboutColor).
+   *
+   * CCW angle (degrees, 0–360) from entry to exit, measured at center:
+   *   ~90°  → Turn Right (first exit encountered going CCW in right-hand traffic)
+   *   ~180° → Continue Straight
+   *   ~270° → Turn Left
+   *   ~0°/360° → U-Turn
+   *
+   * Also draws triangle-leg LineStrings (entry→center and center→each exit) for context.
+   *
+   * @param {number} junctionId     - WME Junction id.
+   * @param {number} entryNodeId    - Node id where the selected entry segment meets the roundabout.
+   * @param {number} label_distance - Current label-distance in meters (used to offset markers).
+   */
+  function ja_draw_roundabout_entry_exits(junctionId, entryNodeId, label_distance) {
+    var junction = sdk.DataModel.Junctions.getById({ junctionId: junctionId });
+    if (!junction) return;
+    var entryNode = sdk.DataModel.Nodes.getById({ nodeId: entryNodeId });
+    if (!entryNode) return;
+    var center = ja_coordinates_to_point(junction.geometry.coordinates);
+    var centerPt = turf.point(center.coordinates);
+    var entryPt = turf.point(entryNode.geometry.coordinates);
+
+    // In LHT countries roundabouts flow clockwise (CW); RHT countries flow CCW.
+    // This affects the order exits are encountered (and therefore ordinal numbering)
+    // but NOT the instruction classification, which is purely geometric.
+    var isLeftHand = (sdk.DataModel.Countries.getAll()[0] || {}).isLeftHandTraffic || false;
+
+    // Compass bearing from roundabout center to the entry node.
+    // Used to compute the CCW angle from entry to each exit.
+    var bearingToEntry = turf.bearing(centerPt, entryPt);
+
+    // Helper: English ordinal suffix for exit numbering ("1st", "2nd", "3rd", …)
+    function ordinal(n) {
+      var s = ['th', 'st', 'nd', 'rd'];
+      var v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    // Draw circle overlay if configured
+    if (ja_getOption('roundaboutOverlayDisplay') === 'rOverSelected') {
+      ja_draw_roundabout_overlay(junctionId);
+    }
+
+    // Draw entry-leg: entry node → roundabout center
+    sdk.Map.addFeatureToLayer({
+      layerName: 'junction_angles',
+      feature: {
+        id: 'ja_' + ++ja_feature_counter,
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [entryNode.geometry.coordinates, center.coordinates] },
+        properties: { ja_type: 'arrow_line' },
+      },
+    });
+
+    // ── Step 1: Collect all valid exits ──────────────────────────────────────
+    var processedNodes = {};
+    var exits = [];
+
+    junction.segmentIds.forEach(function (segId) {
+      var juncSeg = sdk.DataModel.Segments.getById({ segmentId: segId });
+      if (!juncSeg) return;
+
+      var exitNodeId = juncSeg.toNodeId;
+      // Allow the entry node once (U-turn arc) but deduplicate everything else.
+      // We track with a count so a second arc returning to the same node is still skipped.
+      if (processedNodes.hasOwnProperty(String(exitNodeId))) return;
+      processedNodes[String(exitNodeId)] = true;
+
+      var exitNode = sdk.DataModel.Nodes.getById({ nodeId: exitNodeId });
+      if (!exitNode) return;
+
+      // Find the first drivable non-junction exit segment at this node
+      var exitSeg = null;
+      exitNode.connectedSegmentIds.forEach(function (connSegId) {
+        if (exitSeg) return;
+        var s = sdk.DataModel.Segments.getById({ segmentId: connSegId });
+        if (!s || s.junctionId !== null) return;
+        if (sdk.DataModel.Turns.isTurnAllowedBySegmentDirections({ fromSegmentId: juncSeg.id, nodeId: exitNodeId, toSegmentId: s.id })) {
+          exitSeg = s;
+        }
+      });
+      if (!exitSeg) return;
+
+      // CCW angle (0–360°) from entry to this exit, measured at the roundabout center.
+      // In right-hand traffic (CCW roundabout): ~90° = Turn Right, ~180° = Straight, ~270° = Turn Left.
+      // U-turn arc returns to the entry node — assign 360 so it sorts last and falls in the ≥315 U-turn bucket.
+      var ccwAngle;
+      if (exitNodeId === entryNodeId) {
+        ccwAngle = 360;
+      } else {
+        var bearingToExit = turf.bearing(centerPt, turf.point(exitNode.geometry.coordinates));
+        ccwAngle = (bearingToEntry - bearingToExit + 360) % 360;
+      }
+
+      // Triangle angle at center: entry_node → center → exit_node (always 0–180°).
+      // U-turn arc: entry and exit are the same node so the triangle is degenerate (0°).
+      // Use 180° instead — the driver exits back along the same road in the opposite direction.
+      var triAngle = (exitNodeId === entryNodeId)
+        ? 180
+        : ja_angle_between_points(entryNode.geometry, center, exitNode.geometry);
+      var angleMod = Math.abs(triAngle % 90);
+      var isExitAngleNormal = angleMod <= 15 || angleMod >= 75;
+
+      exits.push({
+        exitNodeId: exitNodeId,
+        exitNode: exitNode,
+        exitSeg: exitSeg,
+        juncSeg: juncSeg,
+        ccwAngle: ccwAngle,
+        triAngle: triAngle,
+        isExitAngleNormal: isExitAngleNormal,
+      });
+    });
+
+    if (exits.length === 0) return;
+
+    // ── Step 2: Determine overall roundabout normality for this entry ─────────
+
+    // Criterion 1 – All exits within ±15° of a 90° multiple
+    var allAnglesNormal = exits.every(function (e) { return e.isExitAngleNormal; });
+
+    // Criterion 2 – Total junction node count 2–4
+    var junctionNodeSet = {};
+    junction.segmentIds.forEach(function (segId) {
+      var s = sdk.DataModel.Segments.getById({ segmentId: segId });
+      if (s) junctionNodeSet[String(s.toNodeId)] = true;
+    });
+    var totalJunctionNodes = Object.keys(junctionNodeSet).length;
+    var isNodeCountNormal = totalJunctionNodes >= 2 && totalJunctionNodes <= 4;
+
+    // Criterion 3 – Maximum distance from center to any junction node ≤ 25 m
+    var maxRadius = 0;
+    Object.keys(junctionNodeSet).forEach(function (nid) {
+      var n = sdk.DataModel.Nodes.getById({ nodeId: parseInt(nid, 10) });
+      if (!n) return;
+      var r = turf.distance(centerPt, turf.point(n.geometry.coordinates)) * 1000; // km→m
+      if (r > maxRadius) maxRadius = r;
+    });
+    var isRadiusNormal = maxRadius <= 25;
+
+    var isRoundaboutNormal = allAnglesNormal && isNodeCountNormal && isRadiusNormal;
+    ja_log('Roundabout normal: ' + isRoundaboutNormal + ' (angles:' + allAnglesNormal + ' nodes:' + totalJunctionNodes + ' radius:' + ja_round(maxRadius) + 'm)', 2);
+
+    // ── Center diameter marker ─────────────────────────────────────────────────
+    // Shows the roundabout's diameter (maxRadius × 2) at the center point.
+    // White = radius ≤ 25 m (Normal criterion met); Orange = radius > 25 m (Non-Normal).
+    var diameterM = ja_round(maxRadius * 2);
+    var diameterLabel = ja_getOption('angleDisplay') === 'displaySimple'
+      ? '\u00d8' + diameterM + 'm'
+      : '\u00d8\n' + diameterM + 'm';
+    sdk.Map.addFeatureToLayer({
+      layerName: 'junction_angles',
+      feature: {
+        id: 'ja_' + ++ja_feature_counter,
+        type: 'Feature',
+        geometry: center,
+        properties: {
+          angle: diameterLabel,
+          ja_type: isRadiusNormal ? ja_routing_type.BC : ja_routing_type.ROUNDABOUT,
+        },
+      },
+    });
+
+    // ── Step 3: Sort exits by CCW angle (order encountered going CCW from entry) ──
+    // RHT (CCW roundabout): first exit encountered has smallest ccwAngle → sort ascending.
+    // LHT (CW roundabout):  first exit encountered has largest ccwAngle  → sort descending.
+    exits.sort(isLeftHand ? function (a, b) { return b.ccwAngle - a.ccwAngle; } : function (a, b) { return a.ccwAngle - b.ccwAngle; });
+
+    // ── Step 4: Draw exit legs and markers ───────────────────────────────────
+    exits.forEach(function (exit, index) {
+      // Draw exit leg: roundabout center → exit node
+      sdk.Map.addFeatureToLayer({
+        layerName: 'junction_angles',
+        feature: {
+          id: 'ja_' + ++ja_feature_counter,
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: [center.coordinates, exit.exitNode.geometry.coordinates] },
+          properties: { ja_type: 'arrow_line' },
+        },
+      });
+
+      var exitBearing = ja_getAngle(exit.exitNodeId, exit.exitSeg);
+      var exitLd = label_distance * Math.cos((exit.exitNode.geometry.coordinates[1] * Math.PI) / 180);
+      var point = turf.destination(turf.point(exit.exitNode.geometry.coordinates), (exitLd * 2) / 1000, (90 - exitBearing + 360) % 360).geometry;
+
+      var markerType;
+      if (isRoundaboutNormal) {
+        // Classify by CCW angle from entry (right-hand/CCW traffic convention):
+        //   ~90°  → Turn Right   (first exit going CCW)
+        //   ~180° → Continue Straight
+        //   ~270° → Turn Left    (last exit before U-turn)
+        //   ~0°/360° → U-Turn
+        var ccw = exit.ccwAngle;
+        if (ccw < 45 || ccw >= 315) {
+          markerType = ja_routing_type.U_TURN;
+        } else if (ccw < 135) {
+          markerType = ja_routing_type.TURN_RIGHT;
+        } else if (ccw < 225) {
+          markerType = ja_routing_type.BC; // Continue Straight
+        } else {
+          markerType = ja_routing_type.TURN_LEFT;
+        }
+        // ja_draw_marker handles arrow characters and display-mode formatting,
+        // exactly as it does for regular turn markers at intersections.
+        ja_draw_marker(point, exit.exitNode, exitLd, exit.triAngle, exitBearing, true, markerType);
+      } else {
+        // Non-normal: ordinal exit numbers in encounter order; no arrow needed.
+        // Direct feature add — ordinal string can't pass through ja_draw_marker's numeric 'a'.
+        sdk.Map.addFeatureToLayer({
+          layerName: 'junction_angles',
+          feature: {
+            id: 'ja_' + ++ja_feature_counter,
+            type: 'Feature',
+            geometry: point,
+            properties: {
+              angle: ja_getOption('angleDisplay') === 'displaySimple'
+                ? ordinal(index + 1) + ' ' + ja_round(exit.triAngle) + '°'
+                : ordinal(index + 1) + '\n' + ja_round(exit.triAngle) + '°',
+              ja_type: ja_routing_type.ROUNDABOUT, // "Non-Normal Exit Color" (roundaboutColor) setting
+            },
+          },
+        });
+      }
+    });
   }
 
   /**
@@ -3343,6 +3626,9 @@
           rOverNever: 'Never',
           rOverSelected: 'When selected',
           rOverAlways: 'Always',
+          uTurnIncludeStreet: 'Include Street Type',
+          uTurnIncludeParkingLot: 'Include Parking Lot roads',
+          uTurnIncludePrivateRoad: 'Include Private roads',
           decimals: 'Number of decimals',
           pointSize: 'Base point size',
           settingsguide: 'Settings & User Guide',
@@ -3381,6 +3667,9 @@
           rOverNever: 'Ne-',
           rOverSelected: 'Při výběru',
           rOverAlways: 'Vždy',
+          uTurnIncludeStreet: 'Zahrnout ulice',
+          uTurnIncludeParkingLot: 'Zahrnout parkoviště',
+          uTurnIncludePrivateRoad: 'Zahrnout soukromé cesty',
           decimals: 'Počet des. míst',
           pointSize: 'Velikost písma',
           settingsguide: 'Nastavení a Uživatelská příručka',
@@ -3419,6 +3708,9 @@
           rOverNever: 'Ei ikinä',
           rOverSelected: 'Kun valittu',
           rOverAlways: 'Aina',
+          uTurnIncludeStreet: 'Sisällytä kadut',
+          uTurnIncludeParkingLot: 'Sisällytä parkkialueen tiet',
+          uTurnIncludePrivateRoad: 'Sisällytä yksityistiet',
           decimals: 'Desimaalien määrä',
           pointSize: 'Ympyrän peruskoko',
         });
@@ -3453,6 +3745,9 @@
           rOverNever: 'Nigdy',
           rOverSelected: 'Gdy zaznaczone',
           rOverAlways: 'Zawsze',
+          uTurnIncludeStreet: 'Uwzględnij ulice',
+          uTurnIncludeParkingLot: 'Uwzględnij drogi parkingowe',
+          uTurnIncludePrivateRoad: 'Uwzględnij drogi prywatne',
           decimals: 'Ilość cyfr po przecinku',
           pointSize: 'Rozmiar punktów pomiaru',
         });
@@ -3488,6 +3783,9 @@
           rOverNever: 'Никогда',
           rOverSelected: 'Если выбрано',
           rOverAlways: 'Всегда',
+          uTurnIncludeStreet: '- включить улицы',
+          uTurnIncludeParkingLot: '- включить парковки',
+          uTurnIncludePrivateRoad: '- включить частные дороги',
           decimals: '- знаков после запятой',
           pointSize: '- размер кружка',
           settingsguide: 'Настройки и руководство пользователя',
@@ -3526,6 +3824,9 @@
           rOverNever: 'Aldrig',
           rOverSelected: 'När vald',
           rOverAlways: 'Alltid',
+          uTurnIncludeStreet: 'Inkludera gator',
+          uTurnIncludeParkingLot: 'Inkludera parkeringsvägar',
+          uTurnIncludePrivateRoad: 'Inkludera enskilda vägar',
           decimals: 'Decimaler',
           pointSize: 'Cirkelns basstorlek',
         });
@@ -3560,6 +3861,9 @@
           rOverAlways: 'Toujours',
           roundaboutOverlayColor: 'Surlignage',
           roundaboutColor: 'Sortie anormale',
+          uTurnIncludeStreet: 'Inclure les rues',
+          uTurnIncludeParkingLot: 'Inclure les voies de parking',
+          uTurnIncludePrivateRoad: 'Inclure les voies privées',
           decimals: 'Nombre de decimales',
           pointSize: 'Taille des bulles',
           resetToDefault: 'Réinitialiser par défaut',
@@ -3598,6 +3902,9 @@
           rOverNever: 'Nunca',
           rOverSelected: 'Seleccionadas',
           rOverAlways: 'Siempre',
+          uTurnIncludeStreet: 'Incluir calles',
+          uTurnIncludeParkingLot: 'Incluir vías de estacionamiento',
+          uTurnIncludePrivateRoad: 'Incluir caminos privados',
           decimals: 'Decimales',
           pointSize: 'Tamaño del texto',
           settingsguide: 'Configuración y Guía del usuario',
@@ -3635,6 +3942,9 @@
           rOverNever: 'Ніколи',
           rOverSelected: 'Якщо вибрано',
           rOverAlways: 'Завжди',
+          uTurnIncludeStreet: '- включати вулиці',
+          uTurnIncludeParkingLot: '- включати парковки',
+          uTurnIncludePrivateRoad: '- включати приватні дороги',
           decimals: '- знаків після коми',
           pointSize: '- розмір шрифту',
           settingsguide: 'Налаштування та посібник користувача',
@@ -3926,6 +4236,13 @@
     roundaboutCard.body.appendChild(makeRow(ja_getMessage('roundaboutOverlayColor'), makeColor('roundaboutOverlayColor'), 'ja-sub-row'));
     roundaboutCard.body.appendChild(makeRow(ja_getMessage('roundaboutColor'), makeColor('roundaboutColor'), 'ja-sub-row'));
     jaTabPane.appendChild(roundaboutCard.card);
+
+    // ── U-Turn detection card ──────────────────────────────────────────
+    var uturnsCard = makeCard('fa-undo', 'U-Turn detection road types');
+    uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludeStreet'), makeToggle('uTurnIncludeStreet')));
+    uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludeParkingLot'), makeToggle('uTurnIncludeParkingLot')));
+    uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludePrivateRoad'), makeToggle('uTurnIncludePrivateRoad')));
+    jaTabPane.appendChild(uturnsCard.card);
 
     // ── Footer: reset button + info links ──────────────────────────────
     var footer = document.createElement('div');
