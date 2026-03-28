@@ -8,15 +8,15 @@ This document describes each setting in the JAI sidebar panel.
 
 What you select in WME determines what JAI calculates and how many markers it draws.
 
-| Selection | What JAI shows |
-| --- | --- |
-| **1 segment (normal road)** | Angles at both endpoint nodes — in Departure mode, exits from the selected segment; in Absolute mode, all wedges at each node |
+| Selection                             | What JAI shows                                                                                                                     |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **1 segment (normal road)**           | Angles at both endpoint nodes — in Departure mode, exits from the selected segment; in Absolute mode, all wedges at each node      |
 | **1 segment (roundabout entry road)** | All exits from that roundabout, classified as Normal or Non-Normal — see [Roundabout entry-exit view](#roundabout-entry-exit-view) |
-| **1 segment (roundabout arc)** | Same as selecting the entry road at that arc's start node — all exits from the roundabout |
-| **1 node** | All adjacent-pair angles at that node (Absolute mode behavior regardless of angle mode setting) |
-| **2 connected segments** | A single turn-angle marker at the shared junction node, color-coded with the predicted routing instruction |
-| **2 disconnected segments** | Nothing — segments must share a node |
-| **Mixed types or 3+ features** | Nothing |
+| **1 segment (roundabout arc)**        | Same as selecting the entry road at that arc's start node — all exits from the roundabout                                          |
+| **1 node**                            | All adjacent-pair angles at that node (Absolute mode behavior regardless of angle mode setting)                                    |
+| **2 connected segments**              | A single turn-angle marker at the shared junction node, color-coded with the predicted routing instruction                         |
+| **2 disconnected segments**           | Nothing — segments must share a node                                                                                               |
+| **Mixed types or 3+ features**        | Nothing                                                                                                                            |
 
 ### Two-segment mode
 
@@ -30,8 +30,6 @@ This is equivalent to reading the marker that Departure mode would place on the 
 
 The angle mode setting (**Absolute** / **Departure**) has no effect in two-segment mode — the output is always the signed turn angle between the two selected segments, classified with the full routing-instruction prediction logic.
 
-**Roundabout two-segment path:** If both selected segments are external roads connecting to the same roundabout (one entry, one exit), JAI instead draws the triangle (entry node → center → exit node), places the center-angle marker colored by path normality, and places ±N° deviation markers at any oblique exits. Use this to inspect one specific entry→exit path through the roundabout without the full entry-exit panorama.
-
 ---
 
 ## U-turn detection
@@ -42,10 +40,10 @@ JAI detects two distinct U-turn scenarios, each requiring a different selection 
 
 When the turn angle between two roads at a node is near 180°, JAI classifies it using these thresholds:
 
-| Angle | Classification | Marker color |
-| --- | --- | --- |
-| > 169.74° | U-Turn | Purple (`uTurnInstructionColor`) |
-| 166.74° – 169.74° | Problem (gray zone) | Orange |
+| Angle             | Classification      | Marker color                     |
+| ----------------- | ------------------- | -------------------------------- |
+| > 169.74°         | U-Turn              | Purple (`uTurnInstructionColor`) |
+| 166.74° – 169.74° | Problem (gray zone) | Orange                           |
 
 **How to see it:** Select any segment or node — departure markers appear on every exit, and any exit with a near-180° angle gets a purple U-turn marker. Or select two segments with that geometry to see a single marker for just that turn.
 
@@ -57,11 +55,11 @@ A "double-turn" occurs when a driver crosses a short connector segment (the medi
 
 JAI qualifies a segment as a potential median using the Waze U-turn spec:
 
-| Connector length | Qualifies? |
-| --- | --- |
-| ≤ 30 m | Always |
-| 31 – 49 m | Only if the **incoming segment** has lane guidance configured on its approach to the connector |
-| ≥ 50 m | Never |
+| Connector length | Qualifies?                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| ≤ 30 m           | Always                                                                                         |
+| 31 – 49 m        | Only if the **incoming segment** has lane guidance configured on its approach to the connector |
+| ≥ 50 m           | Never                                                                                          |
 
 The connector segment itself and both arms must meet the road-type threshold. Primary Street and above (Primary Street, Minor Highway, Major Highway, Ramp, Freeway) always qualify. Street, Parking Lot Road, and Private Road are excluded by default and can be individually enabled via the **U-Turn detection** settings.
 
@@ -72,10 +70,10 @@ The connector segment itself and both arms must meet the road-type threshold. Pr
 
 JAI then inspects every road connected at both ends of that connector. For each pair (road-in → connector → road-out) where the combined heading change is ~180° **and both turns are currently allowed**, it places a warning marker:
 
-| Combined angle | Classification | Marker color |
-| --- | --- | --- |
-| 176.5° – 183.5° | **U-turn** — the path forms a U-turn and there is no restriction to prevent it | Purple |
-| 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°) | Orange |
+| Combined angle                     | Classification                                                                 | Marker color |
+| ---------------------------------- | ------------------------------------------------------------------------------ | ------------ |
+| 176.5° – 183.5°                    | **U-turn** — the path forms a U-turn and there is no restriction to prevent it | Purple       |
+| 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°)                                | Orange       |
 
 The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short connector that together add up to a ~180° heading change. The script is telling you that a U-turn is likely and there is no restriction in place to prevent it.
 
@@ -87,11 +85,11 @@ The purple marker here means the same thing as a direct U-turn marker in color, 
 
 Controls which road types are eligible for **double-turn** detection. These settings have no effect on direct U-turns at a single node — those are always shown based on angle alone.
 
-| Setting | Default | Effect when on |
-| --- | --- | --- |
-| **Include Street roads** | Off | Street-class segments can act as the connector or arm in a double-turn path |
-| **Include Parking Lot roads** | Off | Parking Lot Road segments can participate |
-| **Include Private roads** | Off | Private Road segments can participate |
+| Setting                       | Default | Effect when on                                                              |
+| ----------------------------- | ------- | --------------------------------------------------------------------------- |
+| **Include Street roads**      | Off     | Street-class segments can act as the connector or arm in a double-turn path |
+| **Include Parking Lot roads** | Off     | Parking Lot Road segments can participate                                   |
+| **Include Private roads**     | Off     | Private Road segments can participate                                       |
 
 Primary Street and above always qualify regardless of these settings.
 
@@ -114,7 +112,7 @@ Shows the angular gap between each adjacent pair of roads at the junction, place
 
 **Use when:** You want to understand the geometry of the junction itself, independent of direction of travel.
 
-### Departure *(default)*
+### Departure _(default)_
 
 Shows the turn angle **from your selected segment to each possible exit**, with markers placed along each exit road.
 
@@ -126,16 +124,6 @@ Shows the turn angle **from your selected segment to each possible exit**, with 
 
 **Use when:** You are routing through a junction and want to know what instruction each exit will produce.
 
-### Comparison
-
-| | Absolute | Departure |
-| --- | --- | --- |
-| Question answered | "How wide is the gap between these roads?" | "How many degrees do I turn onto this road?" |
-| Marker position | Midpoint of the gap between segments | Along the exit segment's own bearing |
-| Marker count | One per adjacent pair (all gaps) | One per possible exit (excluding selected) |
-| Segment selection required | No | Only meaningful when ≥1 segment is selected (has no effect in two-segment mode) |
-| Marker distance from node | `× 1.25` | `× 2` |
-
 ---
 
 ## Angle display style
@@ -144,7 +132,7 @@ Controls **how the direction arrow is combined with the angle number** inside th
 
 Both styles use the same color coding, circle size, and routing instruction classification — the only difference is layout.
 
-### Fancy *(default)*
+### Fancy _(default)_
 
 The direction arrow is placed on its **own line above** the angle number:
 
@@ -178,24 +166,24 @@ Selects the **character set** used for direction arrows in both display styles.
 
 The setting stores a 5-character string. Each position maps to a direction:
 
-| Position | Direction | Default |
-| --- | --- | --- |
-| 0 | Left (Turn) | `⇐` |
-| 1 | Right (Turn) | `⇒` |
-| 2 | Left-up (Keep/Exit left) | `⇖` |
-| 3 | Right-up (Keep/Exit right) | `⇗` |
-| 4 | Up (Continue straight) | `⇑` |
+| Position | Direction                  | Default |
+| -------- | -------------------------- | ------- |
+| 0        | Left (Turn)                | `⇐`     |
+| 1        | Right (Turn)               | `⇒`     |
+| 2        | Left-up (Keep/Exit left)   | `⇖`     |
+| 3        | Right-up (Keep/Exit right) | `⇗`     |
+| 4        | Up (Continue straight)     | `⇑`     |
 
 Available sets:
 
-| Option | Characters |
-| --- | --- |
-| `<><>` | ASCII — plain `< >` |
-| `⇦⇨⇦⇨⇧` | Outlined block arrows |
+| Option  | Characters                             |
+| ------- | -------------------------------------- |
+| `<><>`  | ASCII — plain `< >`                    |
+| `⇦⇨⇦⇨⇧` | Outlined block arrows                  |
 | `⇐⇒⇐⇒⇑` | Double-stroke arrows (left/right only) |
-| `←→←→↑` | Simple thin arrows |
-| `⇐⇒⇖⇗⇑` | Double-stroke + diagonal *(default)* |
-| `←→↖↗↑` | Thin + diagonal |
+| `←→←→↑` | Simple thin arrows                     |
+| `⇐⇒⇖⇗⇑` | Double-stroke + diagonal _(default)_   |
+| `←→↖↗↑` | Thin + diagonal                        |
 
 ---
 
@@ -203,11 +191,11 @@ Available sets:
 
 Controls whether a circle is drawn over each roundabout on the map.
 
-| Option | Behavior |
-| --- | --- |
-| **Never** *(default)* | No overlay circles are drawn |
-| **When selected** | Circle appears only when a roundabout arc or entry road is selected |
-| **Always** | Circles are drawn on every roundabout visible in the viewport, regardless of selection |
+| Option                | Behavior                                                                               |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| **Never** _(default)_ | No overlay circles are drawn                                                           |
+| **When selected**     | Circle appears only when a roundabout arc or entry road is selected                    |
+| **Always**            | Circles are drawn on every roundabout visible in the viewport, regardless of selection |
 
 The circle is sized to the **mean distance** from the roundabout center point to all of its junction nodes, so it approximates the physical footprint of the road ring.
 
@@ -230,10 +218,10 @@ When you select a **roundabout entry road** or a **roundabout arc segment**, JAI
 
 ### What triggers it
 
-| Selection | Entry point used |
-| --- | --- |
-| Entry road (external segment connecting to the roundabout) | The node where that road meets the roundabout ring |
-| Arc segment (a segment inside the roundabout) | The `fromNode` of that arc — the node where the driver enters the arc |
+| Selection                                                  | Entry point used                                                      |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| Entry road (external segment connecting to the roundabout) | The node where that road meets the roundabout ring                    |
+| Arc segment (a segment inside the roundabout)              | The `fromNode` of that arc — the node where the driver enters the arc |
 
 In both cases the view is identical: all exits visible from that entry point are shown.
 
@@ -241,26 +229,26 @@ In both cases the view is identical: all exits visible from that entry point are
 
 JAI applies the full three-criterion Waze rule to decide whether the roundabout is **Normal** or **Non-Normal** for this entry point:
 
-| Criterion | Normal threshold |
-| --- | --- |
-| All exit angles | Within ±15° of a 90° multiple (i.e. `angle % 90 ≤ 15` or `≥ 75`) |
-| Total junction node count | 2 – 4 nodes |
-| Roundabout radius | ≤ 25 m (max distance from center to any junction node) |
+| Criterion                 | Normal threshold                                                 |
+| ------------------------- | ---------------------------------------------------------------- |
+| All exit angles           | Within ±15° of a 90° multiple (i.e. `angle % 90 ≤ 15` or `≥ 75`) |
+| Total junction node count | 2 – 4 nodes                                                      |
+| Roundabout radius         | ≤ 25 m (max distance from center to any junction node)           |
 
 All three must be met. If any fails, the entire roundabout is Non-Normal for that entry.
 
-> Per Waze editor documentation: *"A roundabout can be both normal and non-normal at the same time depending on your entry node."* The same physical roundabout may show Normal for one entry and Non-Normal for another if angles differ across entry points.
+> Per Waze editor documentation: _"A roundabout can be both normal and non-normal at the same time depending on your entry node."_ The same physical roundabout may show Normal for one entry and Non-Normal for another if angles differ across entry points.
 
 ### Markers — Normal roundabout
 
 When the roundabout qualifies as Normal, each exit receives a **direction-arrow marker** (same style as regular junction markers) colored by the instruction type:
 
-| CCW angle from entry | Instruction | Color |
-| --- | --- | --- |
-| < 45° or ≥ 315° | U-Turn | Purple |
-| 45° – 135° | Turn Right | Blue/green |
-| 135° – 225° | Continue Straight (BC) | White |
-| 225° – 315° | Turn Left | Blue/green |
+| CCW angle from entry | Instruction            | Color      |
+| -------------------- | ---------------------- | ---------- |
+| < 45° or ≥ 315°      | U-Turn                 | Purple     |
+| 45° – 135°           | Turn Right             | Blue/green |
+| 135° – 225°          | Continue Straight (BC) | White      |
+| 225° – 315°          | Turn Left              | Blue/green |
 
 The **CCW angle** is measured at the roundabout center from the entry bearing to each exit bearing, going counterclockwise. In a standard right-hand-traffic roundabout (which runs counterclockwise), ~90° is the first exit to the right, ~180° is straight through, ~270° is left. Left-hand-traffic roundabouts (clockwise) use the same thresholds but exits are sorted in the opposite direction.
 
@@ -270,10 +258,10 @@ The **number** shown in the marker is the triangle angle (entry node → center 
 
 When any criterion fails, exits are labeled with an **ordinal** ("1st", "2nd", "3rd" …) in orange (your **Roundabout Non-Normal Exit Color** setting), numbered in the order a driver encounters them going around the ring. The triangle angle is also shown alongside the ordinal:
 
-| Angle display style | Label format |
-| --- | --- |
-| Fancy | `1st` on top line, `67°` on second line |
-| Simple | `1st 67°` on one line |
+| Angle display style | Label format                            |
+| ------------------- | --------------------------------------- |
+| Fancy               | `1st` on top line, `67°` on second line |
+| Simple              | `1st 67°` on one line                   |
 
 The triangle angle lets you compare each exit's geometry to the ±15° perpendicular threshold. Any exit more than 15° off a 90° multiple is the reason the roundabout is Non-Normal.
 
