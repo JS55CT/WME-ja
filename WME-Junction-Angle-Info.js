@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.0.3
+// @version       3.0.4
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -55,12 +55,9 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Rewritten from the ground up for the WME JavaScript SDK (replaces legacy W/OpenLayers API)',
-    'New: double U-turn detection at H and # intersections — flags ~180° paths across short connector segments (≤30 m, or ≤50 m with incoming lane guidance)',
-    'New U-Turn detection settings: opt-in Street, Parking Lot Road, and Private Road connectors (all off by default)',
-    'Roundabout center now shows a Ø diameter marker (white = radius ≤ 25 m / orange = oversized) to flag the radius Non-Normal criterion at a glance',
-    '±N° deviation markers now appear at every oblique exit regardless of roundabout size',
-    'Departure-mode and ±N° markers are now zoom-aware and no longer overlap',
+    'New Waze double-turn restriction: apply ≤15 m and ±5° parallelism criteria to mark Waze-blocked U-turn paths',
+    'Layer visibility state now persists to localStorage — JAI remembers if you turned it off',
+    'Automatic marker refresh when turn instructions or restrictions are edited (no deselect/reselect needed)',
   ];
   const SCRIPT_VERSION = GM_info.script.version.toString();
   const DOWNLOAD_URL = 'https://update.greasyfork.org/scripts/35547/WME%20Junction%20Angle%20Info.user.js';
@@ -95,6 +92,7 @@
   var GRAY_ZONE = 1.5; // degrees — margin around TURN_ANGLE to absorb measurement noise
   var OVERLAPPING_ANGLE = 0.666; // degrees — two segments closer than this are treated as collinear
   var MIN_ZOOM_LEVEL = 17; // hide all markers when zoomed out past this level
+  var WAZE_PARALLELISM_TOLERANCE = 5; // degrees — parallelism threshold for A and C segments
 
   // ── Routing instruction type enum ────────────────────────────────────────
   // String keys stored in GeoJSON feature properties and matched by SDK styleRules predicates.
@@ -182,6 +180,7 @@
     uTurnIncludeStreet: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludeStreet', defaultValue: false },
     uTurnIncludeParkingLot: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludeParkingLot', defaultValue: false },
     uTurnIncludePrivateRoad: { elementType: 'checkbox', elementId: '_jaCbUTurnIncludePrivateRoad', defaultValue: false },
+    wazeDoubleUTurnRestriction: { elementType: 'checkbox', elementId: '_jaCbWazeDoubleUTurnRestriction', defaultValue: true },
     decimals: { elementType: 'number', elementId: '_jaTbDecimals', defaultValue: 2, min: 0, max: 2 },
     pointSize: { elementType: 'number', elementId: '_jaTbPointSize', defaultValue: 12, min: 6, max: 20 },
   };
@@ -513,15 +512,32 @@
 
               //Determine whether a turn is disallowed
               if (angle >= 175 - GRAY_ZONE && angle <= 185 + GRAY_ZONE) {
-                var turn_type = angle >= 175 + GRAY_ZONE && angle <= 185 - GRAY_ZONE ? ja_routing_type.NO_U_TURN : ja_routing_type.PROBLEM;
+                var turn_type;
+                var useWazeRestriction = false;
 
-                if (ja_is_turn_allowed(fromSegment, fromNode, segment) && ja_is_turn_allowed(segment, toNode, toSegment) &&
-                    (lenRounded <= 30 || ja_segment_has_lane_guidance(fromSegmentId, fromNode.id, segmentId))) {
-                  doubleTurns.collect(segmentId, fromSegmentId, toSegmentId, angle, turn_type);
+                // Check if ALL Waze double-turn restriction conditions are met
+                if (ja_getOption('wazeDoubleUTurnRestriction') && lenRounded <= 15 &&
+                    ja_is_segments_parallel(fromSegment, toSegment, segment.fromNodeId, segment.toNodeId, WAZE_PARALLELISM_TOLERANCE)) {
+                  useWazeRestriction = true;
+                  turn_type = ja_routing_type.NO_U_TURN; // Mark as Disallowed
+                  ja_log('Waze restriction: ALL conditions met (median ≤15m, parallel within ' + WAZE_PARALLELISM_TOLERANCE + '°), flagged as NO_U_TURN', 2);
+                } else {
+                  // Any Waze condition not met, or setting disabled: use legacy angle-based classification
+                  turn_type = angle >= 175 + GRAY_ZONE && angle <= 185 - GRAY_ZONE ? ja_routing_type.U_TURN : ja_routing_type.PROBLEM;
                 }
-                if (ja_is_turn_allowed(toSegment, toNode, segment) && ja_is_turn_allowed(segment, fromNode, fromSegment) &&
-                    (lenRounded <= 30 || ja_segment_has_lane_guidance(toSegmentId, toNode.id, segmentId))) {
-                  doubleTurns.collect(segmentId, toSegmentId, fromSegmentId, angle, turn_type);
+
+                // Collect if turns are allowed (same logic for both paths)
+                if (ja_is_turn_allowed(fromSegment, fromNode, segment) && ja_is_turn_allowed(segment, toNode, toSegment)) {
+                  // When Waze restriction applies, always collect; otherwise check length/lane guidance
+                  if (useWazeRestriction || lenRounded <= 30 || ja_segment_has_lane_guidance(fromSegmentId, fromNode.id, segmentId)) {
+                    doubleTurns.collect(segmentId, fromSegmentId, toSegmentId, angle, turn_type);
+                  }
+                }
+                if (ja_is_turn_allowed(toSegment, toNode, segment) && ja_is_turn_allowed(segment, fromNode, fromSegment)) {
+                  // When Waze restriction applies, always collect; otherwise check length/lane guidance
+                  if (useWazeRestriction || lenRounded <= 30 || ja_segment_has_lane_guidance(toSegmentId, toNode.id, segmentId)) {
+                    doubleTurns.collect(segmentId, toSegmentId, fromSegmentId, angle, turn_type);
+                  }
                 }
               }
             });
@@ -574,8 +590,19 @@
               ja_log('Entry-arm trigger: ' + armId + ' -> ' + neighborId + ' -> ' + exitId + ' angle: ' + combined_angle, 3);
 
               if (combined_angle >= 175 - GRAY_ZONE && combined_angle <= 185 + GRAY_ZONE) {
-                var turn_type = combined_angle >= 175 + GRAY_ZONE && combined_angle <= 185 - GRAY_ZONE
-                  ? ja_routing_type.NO_U_TURN : ja_routing_type.PROBLEM;
+                var turn_type;
+
+                // Check if ALL Waze double-turn restriction conditions are met
+                if (ja_getOption('wazeDoubleUTurnRestriction') && nLen <= 15 &&
+                    ja_is_segments_parallel(armSeg, exitSeg, armNodeId, medianFarNodeId, WAZE_PARALLELISM_TOLERANCE)) {
+                  turn_type = ja_routing_type.NO_U_TURN; // Mark as Disallowed
+                  ja_log('Waze restriction (arm-trigger): ALL conditions met (median ≤15m, parallel within ' + WAZE_PARALLELISM_TOLERANCE + '°), flagged as NO_U_TURN', 2);
+                } else {
+                  // Any Waze condition not met, or setting disabled: use legacy angle-based classification
+                  turn_type = combined_angle >= 175 + GRAY_ZONE && combined_angle <= 185 - GRAY_ZONE
+                    ? ja_routing_type.U_TURN : ja_routing_type.PROBLEM;
+                }
+
                 doubleTurns.farExitMarkers.push({
                   farNodeId: medianFarNodeId,
                   exitBearing: exit_a,
@@ -1500,6 +1527,31 @@
       }
     }
     return false;
+  }
+
+  /**
+   * Checks if two segments (A and C) are within a specified parallelism tolerance.
+   *
+   * Computes the bearing of segment A at its exit node and the bearing of segment C
+   * at its entry node, then calculates the absolute angular difference. Returns true
+   * if the difference is within the specified tolerance.
+   *
+   * @param {Object} segA - SDK Segment object for the incoming segment (A).
+   * @param {Object} segC - SDK Segment object for the outgoing segment (C).
+   * @param {number} nodeA_exit - Node ID at the exit of segment A (where A connects to B).
+   * @param {number} nodeC_entry - Node ID at the entry of segment C (where B connects to C).
+   * @param {number} toleranceDegrees - Maximum angular difference in degrees to consider parallel.
+   * @returns {boolean} True if segments are within tolerance; false otherwise.
+   */
+  function ja_is_segments_parallel(segA, segC, nodeA_exit, nodeC_entry, toleranceDegrees) {
+    var bearingA = ja_getAngle(nodeA_exit, segA);
+    var bearingC = ja_getAngle(nodeC_entry, segC);
+    if (bearingA === null || bearingC === null) {
+      return false;
+    }
+    var diff = Math.abs(ja_angle_diff(bearingA, bearingC, true));
+    ja_log('Parallelism check: A=' + ja_round(bearingA) + '° C=' + ja_round(bearingC) + '° diff=' + ja_round(diff) + '° tolerance=' + toleranceDegrees + '°', 3);
+    return diff <= toleranceDegrees;
   }
 
   /**
@@ -2682,8 +2734,8 @@
     if (ja_type === ja_routing_type.BC) return ja_getOption('noInstructionColor');
     if (ja_type === ja_routing_type.KEEP || ja_type === ja_routing_type.KEEP_LEFT || ja_type === ja_routing_type.KEEP_RIGHT) return ja_getOption('keepInstructionColor');
     if (ja_type === ja_routing_type.EXIT || ja_type === ja_routing_type.EXIT_LEFT || ja_type === ja_routing_type.EXIT_RIGHT) return ja_getOption('exitInstructionColor');
-    if (ja_type === ja_routing_type.U_TURN || ja_type === ja_routing_type.NO_U_TURN) return ja_getOption('uTurnInstructionColor');
-    if (ja_type === ja_routing_type.NO_TURN) return ja_getOption('noTurnColor');
+    if (ja_type === ja_routing_type.U_TURN) return ja_getOption('uTurnInstructionColor');
+    if (ja_type === ja_routing_type.NO_TURN || ja_type === ja_routing_type.NO_U_TURN) return ja_getOption('noTurnColor');
     if (ja_type === ja_routing_type.PROBLEM) return ja_getOption('problemColor');
     if (ja_type === ja_routing_type.ROUNDABOUT) return ja_getOption('roundaboutColor');
     if (ja_type === ja_routing_type.ROUNDABOUT_EXIT) return ja_getOption('exitInstructionColor');
@@ -2895,6 +2947,7 @@
           uTurnIncludeStreet: 'Include Street Type',
           uTurnIncludeParkingLot: 'Include Parking Lot roads',
           uTurnIncludePrivateRoad: 'Include Private roads',
+          wazeDoubleUTurnRestriction: 'Disable for <15m and ±5° parallel',
           decimals: 'Number of decimals',
           pointSize: 'Base point size',
           settingsguide: 'Settings & User Guide',
@@ -2936,6 +2989,7 @@
           uTurnIncludeStreet: 'Zahrnout ulice',
           uTurnIncludeParkingLot: 'Zahrnout parkoviště',
           uTurnIncludePrivateRoad: 'Zahrnout soukromé cesty',
+          wazeDoubleUTurnRestriction: 'Zakázat pro <15m a ±5° paralelně',
           decimals: 'Počet des. míst',
           pointSize: 'Velikost písma',
           settingsguide: 'Nastavení a Uživatelská příručka',
@@ -2977,6 +3031,7 @@
           uTurnIncludeStreet: 'Sisällytä kadut',
           uTurnIncludeParkingLot: 'Sisällytä parkkialueen tiet',
           uTurnIncludePrivateRoad: 'Sisällytä yksityistiet',
+          wazeDoubleUTurnRestriction: 'Poista käytöstä <15m ja ±5° rinnakkaisille',
           decimals: 'Desimaalien määrä',
           pointSize: 'Ympyrän peruskoko',
         });
@@ -3014,6 +3069,7 @@
           uTurnIncludeStreet: 'Uwzględnij ulice',
           uTurnIncludeParkingLot: 'Uwzględnij drogi parkingowe',
           uTurnIncludePrivateRoad: 'Uwzględnij drogi prywatne',
+          wazeDoubleUTurnRestriction: 'Wyłącz dla <15m i ±5° równoległy',
           decimals: 'Ilość cyfr po przecinku',
           pointSize: 'Rozmiar punktów pomiaru',
         });
@@ -3052,6 +3108,7 @@
           uTurnIncludeStreet: '- включить улицы',
           uTurnIncludeParkingLot: '- включить парковки',
           uTurnIncludePrivateRoad: '- включить частные дороги',
+          wazeDoubleUTurnRestriction: 'Отключить для <16м и ±5° параллель',
           decimals: '- знаков после запятой',
           pointSize: '- размер кружка',
           settingsguide: 'Настройки и руководство пользователя',
@@ -3093,6 +3150,7 @@
           uTurnIncludeStreet: 'Inkludera gator',
           uTurnIncludeParkingLot: 'Inkludera parkeringsvägar',
           uTurnIncludePrivateRoad: 'Inkludera enskilda vägar',
+          wazeDoubleUTurnRestriction: 'Inaktivera för <15m och ±5° parallell',
           decimals: 'Decimaler',
           pointSize: 'Cirkelns basstorlek',
         });
@@ -3130,6 +3188,7 @@
           uTurnIncludeStreet: 'Inclure les rues',
           uTurnIncludeParkingLot: 'Inclure les voies de parking',
           uTurnIncludePrivateRoad: 'Inclure les voies privées',
+          wazeDoubleUTurnRestriction: 'Désactiver pour <15m et ±5° parallèle',
           decimals: 'Nombre de decimales',
           pointSize: 'Taille des bulles',
           resetToDefault: 'Réinitialiser par défaut',
@@ -3171,6 +3230,7 @@
           uTurnIncludeStreet: 'Incluir calles',
           uTurnIncludeParkingLot: 'Incluir vías de estacionamiento',
           uTurnIncludePrivateRoad: 'Incluir caminos privados',
+          wazeDoubleUTurnRestriction: 'Desactivar para <15m y ±5° paralelo',
           decimals: 'Decimales',
           pointSize: 'Tamaño del texto',
           settingsguide: 'Configuración y Guía del usuario',
@@ -3211,6 +3271,7 @@
           uTurnIncludeStreet: '- включати вулиці',
           uTurnIncludeParkingLot: '- включати парковки',
           uTurnIncludePrivateRoad: '- включати приватні дороги',
+          wazeDoubleUTurnRestriction: 'Вимкнути для <15м і ±5° паралельно',
           decimals: '- знаків після коми',
           pointSize: '- розмір шрифту',
           settingsguide: 'Налаштування та посібник користувача',
@@ -3508,6 +3569,7 @@
     uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludeStreet'), makeToggle('uTurnIncludeStreet')));
     uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludeParkingLot'), makeToggle('uTurnIncludeParkingLot')));
     uturnsCard.body.appendChild(makeRow(ja_getMessage('uTurnIncludePrivateRoad'), makeToggle('uTurnIncludePrivateRoad')));
+    uturnsCard.body.appendChild(makeRow(ja_getMessage('wazeDoubleUTurnRestriction'), makeToggle('wazeDoubleUTurnRestriction')));
     jaTabPane.appendChild(uturnsCard.card);
 
     // ── Footer: reset button + info links ──────────────────────────────
@@ -3610,6 +3672,22 @@
       },
     });
 
+    // ── Auto-refresh on turn instruction/restriction changes ──────────────
+    // When a user edits a turn (changes instruction, adds/removes restrictions, etc.),
+    // automatically recalculate JAI markers if a segment or node is currently selected.
+    // This prevents stale markers when turn data changes in-place.
+    sdk.Events.on({
+      eventName: 'wme-after-edit',
+      eventHandler: function () {
+        // Check if we have a current selection (segment, node, or multiple items)
+        var currentSel = sdk.Editing.getSelection();
+        if (currentSel && currentSel.ids && currentSel.ids.length > 0) {
+          // Recalculate markers for the currently selected items
+          ja_calculate();
+        }
+      },
+    });
+
     // ── Translations & sidebar HTML ───────────────────────────────────
     ja_load();
     ja_loadTranslations();
@@ -3654,6 +3732,10 @@
      */
     function ja_setLayerEnabled(enabled) {
       ja_layer_visible = enabled;
+      // Persist layer visibility state to localStorage
+      if (localStorage) {
+        localStorage.setItem('wme_ja_layer_visible', ja_layer_visible ? 'true' : 'false');
+      }
       sdk.Map.setLayerVisibility({ layerName: 'junction_angles', visibility: ja_layer_visible });
       sdk.LayerSwitcher.setLayerCheckboxChecked({ name: 'Junction Angle Info', isChecked: ja_layer_visible });
       var btn = jaTabLabel.querySelector('#ja-power-btn');
@@ -3663,7 +3745,12 @@
     }
 
     // ── Layer visibility checkbox ─────────────────────────────────────
-    sdk.LayerSwitcher.addLayerCheckbox({ name: 'Junction Angle Info', isChecked: true });
+    // Restore layer visibility state from localStorage (default to true if not saved)
+    if (localStorage) {
+      var savedVisibility = localStorage.getItem('wme_ja_layer_visible');
+      ja_layer_visible = savedVisibility === 'false' ? false : true;
+    }
+    sdk.LayerSwitcher.addLayerCheckbox({ name: 'Junction Angle Info', isChecked: ja_layer_visible });
     sdk.Events.on({
       eventName: 'wme-layer-checkbox-toggled',
       eventHandler: function (evt) {
@@ -3680,6 +3767,16 @@
         e.stopPropagation();
       }
     });
+
+    // ── Apply saved visibility state to layer ─────────────────────────
+    if (!ja_layer_visible) {
+      // If saved state is off, hide the layer immediately
+      sdk.Map.setLayerVisibility({ layerName: 'junction_angles', visibility: false });
+      var btn = jaTabLabel.querySelector('#ja-power-btn');
+      if (btn) {
+        btn.style.color = '#ccc';
+      }
+    }
 
     ja_apply();
     ja_calculate();

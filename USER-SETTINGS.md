@@ -68,14 +68,15 @@ The connector segment itself and both arms must meet the road-type threshold. Pr
 1. Switch to **Departure mode**
 2. Select **the connector segment itself** (not a node, not a longer road)
 
-JAI then inspects every road connected at both ends of that connector. For each pair (road-in → connector → road-out) where the combined heading change is ~180° **and both turns are currently allowed**, it places a warning marker:
+JAI then inspects every road connected at both ends of that connector. For each pair (road-in → connector → road-out) where the combined heading change is ~180° **and both turns are currently allowed**, it places a marker:
 
-| Combined angle                     | Classification                                                                 | Marker color |
-| ---------------------------------- | ------------------------------------------------------------------------------ | ------------ |
-| 176.5° – 183.5°                    | **U-turn** — the path forms a U-turn and there is no restriction to prevent it | Purple       |
-| 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°)                                | Orange       |
+| Combined angle                     | Classification                                  | Marker color | Condition                                                     |
+| ---------------------------------- | ----------------------------------------------- | ------------ | ------------------------------------------------------------- |
+| 176.5° – 183.5°                    | **U-turn** — valid path; Waze would allow it    | Purple       | Waze restriction disabled, OR any of the 5 Waze criteria fail |
+| 176.5° – 183.5°                    | **Disallowed** — Waze blocks this path          | Gray         | Waze restriction enabled AND all 5 Waze criteria met          |
+| 173.5° – 176.5° or 183.5° – 186.5° | Problem (gray zone — near but not cleanly 180°) | Orange       | Angle is ambiguous; Waze criteria not met                     |
 
-The purple marker here means the same thing as a direct U-turn marker in color, but the cause is different: the driver is not making one sharp U-turn — they are making two separate turns across a short connector that together add up to a ~180° heading change. The script is telling you that a U-turn is likely and there is no restriction in place to prevent it.
+The **purple marker** indicates the driver could make a U-turn at this double-turn path — the geometry forms a U but there is no Waze algorithmic restriction preventing it.
 
 > **Note:** This check only runs in Departure mode when a segment is selected (giving JAI both endpoint nodes to work with). Selecting just a node, or being in Absolute mode, will not trigger it.
 
@@ -85,13 +86,25 @@ The purple marker here means the same thing as a direct U-turn marker in color, 
 
 Controls which road types are eligible for **double-turn** detection. These settings have no effect on direct U-turns at a single node — those are always shown based on angle alone.
 
-| Setting                       | Default | Effect when on                                                              |
-| ----------------------------- | ------- | --------------------------------------------------------------------------- |
-| **Include Street roads**      | Off     | Street-class segments can act as the connector or arm in a double-turn path |
-| **Include Parking Lot roads** | Off     | Parking Lot Road segments can participate                                   |
-| **Include Private roads**     | Off     | Private Road segments can participate                                       |
+| Setting                                | Default | Effect when on                                                              |
+| -------------------------------------- | ------- | --------------------------------------------------------------------------- |
+| **Include Street roads**               | Off     | Street-class segments can act as the connector or arm in a double-turn path |
+| **Include Parking Lot roads**          | Off     | Parking Lot Road segments can participate                                   |
+| **Include Private roads**              | Off     | Private Road segments can participate                                       |
+| **Disable for ≤15 m and ±5° parallel** | On      | Apply Waze's 15m & ±5° parallel criterion (see below)                       |
 
-Primary Street and above always qualify regardless of these settings.
+Primary Street and above always qualify regardless of the road-type settings.
+
+### Waze double-turn restriction (≤15 m & ±5° parallel)
+
+When **enabled**, this setting applies Waze's algorithmic restriction to double-turn paths. The restriction requires **all conditions**:
+
+1. Three segments (A→B→C with B being the median)
+2. Median B ≤ 15 meters
+3. A and C within ±5° of parallel to each other
+4. Both A and C pass road-type qualification: Primary Street and above always qualify; Street, Parking Lot Road, and Private Road only qualify if their respective toggle settings are enabled
+
+When all criteria are met, the marker appears **gray** (`noTurnColor`), indicating the turn is **Waze-disallowed** due to the routing algorithm's penalty. If any condition fails, JAI falls back to the  defult Double-turn via short connector (purple for valid U-turns, orange/yellow for ambiguous cases).
 
 > **Why Street is off by default:** Street-class roads connecting across a median are common in dense areas and frequently produced false-positive U-turn warnings that were not actionable. Editors working in areas where Street-class medians are a genuine concern can enable the toggle.
 
