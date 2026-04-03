@@ -3064,11 +3064,16 @@
         // Check restriction state: can be blocked at JB turn level or at intermediate nodes
         // Track this so we can display gray marker instead of skipping entirely (for consistency with local turns)
         var isPathRestricted = false;
-        var isFallbackJBTurn = !turn.isJunctionBoxTurn && turn.segmentPath && turn.segmentPath.length > 0;
+        var isFallbackJBTurn = !turn.isJunctionBoxTurn && !turn.isPathTurn && turn.segmentPath && turn.segmentPath.length > 0;
 
-        // First check: Turn restriction set directly on the turn
+        // First check: Turn restriction set directly on the turn (JB turns)
         if (turn.isJunctionBoxTurn && !turn.isAllowed) {
           ja_log('[FAR-TURNS] JB turn ' + turn.id + ' restricted: turn.isAllowed=false', 2);
+          isPathRestricted = true;
+        }
+        // Path turns: check actual Path-level restriction status
+        if (turn.isPathTurn && !turn.isAllowed) {
+          ja_log('[FAR-TURNS] Path turn ' + turn.id + ' restricted: turn.isAllowed=false', 2);
           isPathRestricted = true;
         }
         // For fallback JB turns (from getAllPossibleTurns): treat as restricted if not explicitly allowed
@@ -3153,12 +3158,6 @@
           // Skip blocked steps (JB only)
           if (blockedSteps[stepIndex]) {
             ja_log('[FAR-TURNS] Skipping step ' + stepIndex + ' — local restriction', 3);
-            continue;
-          }
-
-          // For Path turns, only draw the final step (connecting node)
-          if (turn.isPathTurn && !isFinalStep) {
-            ja_log('[FAR-TURNS] Skipping intermediate step ' + stepIndex + ' for Path turn', 3);
             continue;
           }
 
