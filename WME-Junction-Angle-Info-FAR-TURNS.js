@@ -64,7 +64,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 2; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
+  var junctionangle_debug = 3; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
@@ -168,6 +168,7 @@
     RUNWAY: 19,
   };
 
+
   // ── Settings schema ───────────────────────────────────────────────────────
   // Each entry describes one user-configurable option: the UI element type/id and
   // the default value applied when no stored value exists or the stored value is invalid.
@@ -241,6 +242,15 @@
     return sel.ids.map(function (id) {
       return { type: sel.objectType, id: id };
     });
+  }
+
+  /**
+   * Returns true if anything is currently selected in the editor.
+   *
+   * @returns {boolean} True if the selection is non-empty.
+   */
+  function hasSelection() {
+    return getselfeat().length > 0;
   }
 
   /**
@@ -512,6 +522,26 @@
         ja_log('Segment ' + segmentId + ' length: ' + len, 3);
         if (!ja_is_uturn_qualifying_road(segment)) return;
 
+        // SUPPRESS LOCAL DOUBLE U-TURNS FOR ENTRY SEGMENTS CROSSING INTO JB
+        // When a segment crosses INTO a JB (one endpoint outside, one inside),
+        // JB far-turn logic (with U-TURN instructions) takes over. Local double-turn
+        // markers would duplicate the JB U-TURN marker.
+        var fromNode = sdk.DataModel.Nodes.getById({ nodeId: segment.fromNodeId });
+        var toNode = sdk.DataModel.Nodes.getById({ nodeId: segment.toNodeId });
+        var allBigJunctions = sdk.DataModel.BigJunctions.getAll();
+
+        for (var bji = 0; bji < allBigJunctions.length; bji++) {
+          var bjPolygon = turf.polygon(allBigJunctions[bji].geometry.coordinates);
+          var fromInside = turf.booleanPointInPolygon(turf.point(fromNode.geometry.coordinates), bjPolygon);
+          var toInside = turf.booleanPointInPolygon(turf.point(toNode.geometry.coordinates), bjPolygon);
+
+          // If one endpoint inside and one outside, segment crosses JB boundary
+          if ((fromInside && !toInside) || (!fromInside && toInside)) {
+            ja_log('Skipping double turns for ' + segmentId + ' — crosses INTO JB boundary (JB far-turns take precedence)', 2);
+            return; // Skip double-turn collection for this entry-to-JB segment
+          }
+        }
+
         var lenRounded = Math.round(len);
         if (lenRounded <= 49) {
           var fromNode = sdk.DataModel.Nodes.getById({ nodeId: segment.fromNodeId });
@@ -583,6 +613,25 @@
         var armId = selectedSegment.id;
         var armSeg = sdk.DataModel.Segments.getById({ segmentId: armId });
         if (!ja_is_uturn_qualifying_road(armSeg)) return;
+
+        // SUPPRESS LOCAL DOUBLE U-TURNS FOR ARM SEGMENTS CROSSING INTO JB
+        var armFromNode = sdk.DataModel.Nodes.getById({ nodeId: armSeg.fromNodeId });
+        var armToNode = sdk.DataModel.Nodes.getById({ nodeId: armSeg.toNodeId });
+        var armBigJunctions = sdk.DataModel.BigJunctions.getAll();
+        var armCrossesJB = false;
+
+        for (var armBji = 0; armBji < armBigJunctions.length; armBji++) {
+          var armBjPolygon = turf.polygon(armBigJunctions[armBji].geometry.coordinates);
+          var armFromInside = turf.booleanPointInPolygon(turf.point(armFromNode.geometry.coordinates), armBjPolygon);
+          var armToInside = turf.booleanPointInPolygon(turf.point(armToNode.geometry.coordinates), armBjPolygon);
+
+          if ((armFromInside && !armToInside) || (!armFromInside && armToInside)) {
+            ja_log('Skipping arm double turns for ' + armId + ' — crosses INTO JB boundary (JB far-turns take precedence)', 2);
+            armCrossesJB = true;
+            break;
+          }
+        }
+        if (armCrossesJB) return;
 
         [armSeg.fromNodeId, armSeg.toNodeId].forEach(function (armNodeId) {
           var armNode = sdk.DataModel.Nodes.getById({ nodeId: armNodeId });
@@ -909,10 +958,15 @@
       // Placed after the regular segment-pair markers so far turn markers render
       // on top without interfering with the standard angle annotations.
       //
+      // DEPARTURE MODE ONLY: Far turns (Paths and JB turns) only make sense in
+      // Departure mode where you select an entry segment and see where it goes.
+      // In Absolute mode, we only show geometric gaps between adjacent pairs,
+      // independent of direction of travel, so far turns should not appear.
+      //
       // To disable far turn display without removing the code, comment out this line.
       // Suppressed when any selected segment is a JB median: internal segments are handled
       // by the regular node-pair loop above; far-turn exit markers would be misleading.
-      if (!ja_selected_has_median) {
+      if (ja_getOption('angleMode') === 'aDeparture' && !ja_selected_has_median) {
         ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids);
       }
     }
@@ -952,20 +1006,23 @@
    * Exits early if the data model returns stale data that requires a deferred retry.
    */
   function testSelectedItem() {
+    // Always clear the layer first to stay in sync with selection state
     sdk.Map.removeAllFeaturesFromLayer({ layerName: 'junction_angles' });
     ja_roundabout_points = [];
     ja_current_features = [];
     ja_feature_counter = 0;
+
+    // Early exit if nothing is selected (after cleanup)
+    var ja_selfeat = getselfeat();
+    if (ja_selfeat.length === 0 || ja_selfeat.length > 2) {
+      return;
+    }
+
     if (sdk.Map.getZoomLevel() < MIN_ZOOM_LEVEL) {
       return;
     }
     if (ja_getOption('roundaboutOverlayDisplay') === 'rOverAlways') {
       ja_draw_roundabout_overlay();
-    }
-
-    var ja_selfeat = getselfeat();
-    if (ja_selfeat.length > 2) {
-      return;
     }
 
     var ja_start_time = Date.now();
@@ -2694,6 +2751,8 @@
    *                                    uses the same KEEP/EXIT/TURN thresholds as regular turns.
    */
   function ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids) {
+    ja_log('[FAR-TURNS] ─── CALLED FOR NODE ' + node.id + ' ───', 1);
+
     // WHY getTurnsFromSegment instead of getTurnsThroughNode:
     // getTurnsThroughNode only returns turns where BOTH the entry and exit segment connect
     // at the same node — i.e., standard direct turns. Far turns (JB turns, path turns) have
@@ -2708,6 +2767,8 @@
     var drawnIntermediateSteps = {}; // key: "nodeId_angleRounded", prevents duplicate intermediate-step markers when multiple paths share the same median segment
 
     node.connectedSegmentIds.forEach(function (segId) {
+      ja_log('[FAR-TURNS]   Processing segId ' + segId + ' from node ' + node.id, 2);
+
       // Only draw far turns FROM the user-selected entry segment(s).
       //
       // When a segment is selected, regular departure-mode markers show angles FROM that
@@ -2728,38 +2789,140 @@
       }
 
       // Skip segments that are contained within a BigJunction (median/intermediate segments).
-      //
-      // Segments inside a JB are the internal connector roads that make up the JB's interior.
-      // They are NOT entry or exit segments — they are the in-between segments that form the
-      // physical path through the junction. When a user selects one of these, the regular
-      // ja_draw_node_markers() logic handles angle display for internal node-to-node transitions.
-      //
-      // Drawing far-turn markers for them here would be incorrect because:
-      //   1. The "far turn" angle (entry→exit of the whole JB path) does not originate here.
-      //   2. getTurnsFromSegment on a median segment may still surface the JB turn,
-      //      causing duplicate or misplaced markers.
-      //
-      // sdk.DataModel.Segments.isContainedInBigJunction({ segmentId }) returns true when
-      // the segment appears in any BigJunction.segmentIds[]. It's a method on the Segments
-      // collection class, not a property on the segment object itself.
       if (sdk.DataModel.Segments.isContainedInBigJunction({ segmentId: segId })) {
         ja_log('[FAR-TURNS] Skipping segId ' + segId + ' — isContainedInBigJunction (median segment)', 3);
         return;
       }
 
+      // Get direct turns from this segment
       var turnsFromSeg = sdk.DataModel.Turns.getTurnsFromSegment({ segmentId: segId });
       if (!turnsFromSeg || turnsFromSeg.length === 0) return;
 
+      // Check if this segment has JB far turns via the normal method
+      var jbFarTurnsCount = turnsFromSeg.filter(function(t) { return t.isJunctionBoxTurn || t.isPathTurn; }).length;
+
+      // FALLBACK: If no JB far turns found, try getAllPossibleTurns() as alternative
+      if (jbFarTurnsCount === 0) {
+        // Check if this segment crosses into a BigJunction and if we're at the correct entry node
+        var seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+        if (seg) {
+          var fromNode = sdk.DataModel.Nodes.getById({ nodeId: seg.fromNodeId });
+          var toNode = sdk.DataModel.Nodes.getById({ nodeId: seg.toNodeId });
+
+          if (fromNode && toNode) {
+            var allBigJunctions = sdk.DataModel.BigJunctions.getAll();
+            var isJBSegment = false;
+            var entryNodeForTurns = null;
+
+            // Determine if segment crosses JB boundary and which node is the entry node
+            for (var bji = 0; bji < allBigJunctions.length; bji++) {
+              var bj = allBigJunctions[bji];
+              var bjPolygon = turf.polygon(bj.geometry.coordinates);
+              var fromInside = turf.booleanPointInPolygon(turf.point(fromNode.geometry.coordinates), bjPolygon);
+              var toInside = turf.booleanPointInPolygon(turf.point(toNode.geometry.coordinates), bjPolygon);
+
+              // Check if segment crosses JB boundary (entry: outside→inside, exit: inside→outside)
+              if ((!fromInside && toInside) || (fromInside && !toInside)) {
+                isJBSegment = true;
+                // The entry node is where the turn originates (inside the JB)
+                entryNodeForTurns = toInside ? seg.toNodeId : seg.fromNodeId;
+                break;  // Only check the first matching JB
+              }
+            }
+
+            // Only query getAllPossibleTurns when we're at the correct entry node
+            if (isJBSegment && entryNodeForTurns === node.id) {
+              ja_log('[FAR-TURNS] segId ' + segId + ' has 0 JB far turns via getTurnsFromSegment() — trying getAllPossibleTurns()...', 1);
+
+              try {
+                var allTurns = sdk.DataModel.BigJunctions.getAllPossibleTurns({ bigJunctionId: bj.id });
+                ja_log('[FAR-TURNS] getAllPossibleTurns(' + bj.id + ') returned ' + allTurns.length + ' total turns', 1);
+
+                // Filter for turns from this entry segment that have intermediate segments (far turns through JB)
+                // CRITICAL: getAllPossibleTurns() returns ALL path combinations through a JB, including
+                // traversals of median segments in BOTH directions. We must reject nonsensical paths.
+                var fallbackTurns = allTurns.filter(function(t) {
+                  if (!(t.fromSegmentId === segId && t.segmentPath && t.segmentPath.length > 0)) {
+                    return false;
+                  }
+
+                  // REJECT: paths that traverse the same segment multiple times
+                  // These are backtrack/loop paths and geometrically invalid
+                  var pathSegIds = t.segmentPath;
+                  for (var psi = 0; psi < pathSegIds.length - 1; psi++) {
+                    if (pathSegIds[psi] === pathSegIds[psi + 1]) {
+                      ja_log('[FAR-TURNS] Rejecting turn ' + t.id + ' — same segment ' + pathSegIds[psi] + ' appears consecutively in path', 2);
+                      return false;
+                    }
+                  }
+
+                  var tFromSeg = sdk.DataModel.Segments.getById({ segmentId: t.fromSegmentId });
+                  var tFirstPathSeg = sdk.DataModel.Segments.getById({ segmentId: t.segmentPath[0] });
+                  if (tFromSeg == null || tFirstPathSeg == null) return false;
+
+                  var tEntryNode = ja_get_connecting_node(tFromSeg, tFirstPathSeg);
+                  if (tEntryNode !== entryNodeForTurns) return false;
+
+                  // Determine which node of firstPathSeg is the "exit" (not the entry)
+                  var firstPathExitNode = null;
+                  if (tFirstPathSeg.fromNodeId === entryNodeForTurns) {
+                    firstPathExitNode = tFirstPathSeg.toNodeId;  // traverse toward toNodeId
+                  } else if (tFirstPathSeg.toNodeId === entryNodeForTurns) {
+                    firstPathExitNode = tFirstPathSeg.fromNodeId;  // traverse toward fromNodeId
+                  } else {
+                    return false;  // doesn't touch entry node
+                  }
+
+                  // Now check: if there's a second segment in the path, it should connect
+                  // from firstPathExitNode. If it doesn't, this traversal direction is wrong.
+                  if (t.segmentPath.length > 1) {
+                    var tSecondPathSeg = sdk.DataModel.Segments.getById({ segmentId: t.segmentPath[1] });
+                    if (tSecondPathSeg == null) return false;
+
+                    // Check if secondPathSeg connects to firstPathExitNode
+                    if (tSecondPathSeg.fromNodeId !== firstPathExitNode &&
+                        tSecondPathSeg.toNodeId !== firstPathExitNode) {
+                      // Second segment doesn't connect to exit of first segment
+                      // This indicates wrong traversal direction through first segment
+                      ja_log('[FAR-TURNS] Rejecting turn ' + t.id + ' — path breaks at first→second segment connection', 2);
+                      return false;
+                    }
+                  }
+
+                  return true;
+                });
+
+                ja_log('[FAR-TURNS] Filtered to ' + fallbackTurns.length + ' far turns FROM entry segment ' + segId, 1);
+
+                if (fallbackTurns.length > 0) {
+                  turnsFromSeg = fallbackTurns;
+                  ja_log('[FAR-TURNS] Using getAllPossibleTurns() results as fallback', 1);
+                }
+              } catch (e) {
+                ja_log('[FAR-TURNS] getAllPossibleTurns(' + bj.id + ') threw error: ' + e.message, 1);
+              }
+            } else if (isJBSegment && entryNodeForTurns !== node.id) {
+              ja_log('[FAR-TURNS] Segment ' + segId + ' is a JB segment, but entry node is ' + entryNodeForTurns + ', not current node ' + node.id + ' — skipping', 2);
+              return;  // Skip this segment at this node
+            }
+          }
+        }
+      }
+
       turnsFromSeg.forEach(function (turn) {
+        ja_log('[FAR-TURNS] Turn ' + turn.id + ': isPathTurn=' + turn.isPathTurn + ', isJunctionBoxTurn=' + turn.isJunctionBoxTurn, 3);
+
         // Only process far turns (Path turns or Junction Box turns).
         // Regular turns (isPathTurn=false, isJunctionBoxTurn=false) are already handled
         // by the existing ja_draw_node_markers() loop and should not be duplicated here.
-        if (!turn.isPathTurn && !turn.isJunctionBoxTurn) return;
-
-        // Deduplicate: a far turn may appear in results for multiple connected segments.
-        // Only draw it once per node visit.
-        if (seenTurnIds[turn.id]) return;
-        seenTurnIds[turn.id] = true;
+        // Also accept turns with intermediate segments (from getAllPossibleTurns fallback)
+        // even if they don't have the isJunctionBoxTurn flag set.
+        var isFarTurn = turn.isPathTurn || turn.isJunctionBoxTurn ||
+                        (turn.segmentPath && turn.segmentPath.length > 0);
+        if (!isFarTurn) {
+          ja_log('[FAR-TURNS] Skipping turn ' + turn.id + ' — not a far turn', 3);
+          return;
+        }
 
         // segmentPath[] contains the IDs of the intermediate segments connecting
         // fromSegmentId to toSegmentId. It excludes the entry and exit segments themselves.
@@ -2770,6 +2933,7 @@
           return;
         }
 
+
         // Fetch the entry segment for this far turn.
         var fromSeg = sdk.DataModel.Segments.getById({ segmentId: turn.fromSegmentId });
         if (fromSeg == null) {
@@ -2777,11 +2941,35 @@
           return;
         }
 
+        // For fallback turns from getAllPossibleTurns(): verify path orientation.
+        // getAllPossibleTurns() returns paths using median segments in both forward and
+        // reverse directions. We must skip paths that traverse median segments backward.
+        var isFallbackTurn = !turn.isJunctionBoxTurn && turn.segmentPath && turn.segmentPath.length > 0;
+        if (isFallbackTurn) {
+          var firstPathSegId = turn.segmentPath[0];
+          var firstPathSeg = sdk.DataModel.Segments.getById({ segmentId: firstPathSegId });
+          if (firstPathSeg == null) {
+            ja_log('[FAR-TURNS] Skipping fallback turn ' + turn.id + ' — firstPathSeg not found', 1);
+            return;
+          }
+          // Check if fromSeg actually connects to firstPathSeg. If no connection exists,
+          // it means the path uses a segment in the wrong (backward) orientation.
+          var testConnectNode = ja_get_connecting_node(fromSeg, firstPathSeg);
+          if (testConnectNode == null) {
+            ja_log('[FAR-TURNS] Skipping fallback turn ' + turn.id + ' — cannot connect to first path segment (wrong orientation)', 2);
+            return;
+          }
+        }
+
         // CRITICAL: Verify the current node is the actual JB/path entry node.
         //
         // Problem: getTurnsFromSegment returns the same far turn when called from EITHER
         // endpoint of the fromSegment. A selected segment A→B only enters the JB at B,
         // but we process both node A and node B. Without this check, markers appear at A too.
+        //
+        // For fallback turns from getAllPossibleTurns(), they are indexed to a specific
+        // entry node. We must validate before marking as seen, otherwise the turn won't
+        // be processed when we reach the correct node.
         //
         // Fix: The true entry node is the node shared between fromSegment and the FIRST
         // segment in segmentPath[]. That is the point where the segment physically hands off
@@ -2797,6 +2985,13 @@
           ja_log('[FAR-TURNS] Skipping far turn ' + turn.id + ' at node ' + node.id + ' — entry is at node ' + entryNodeId, 2);
           return;
         }
+
+        // Deduplicate: a far turn may appear in results for multiple connected segments.
+        // Only draw it once per node visit. This is checked AFTER node validation so that
+        // fallback turns (which are node-specific) can be processed from their correct node
+        // even if they were encountered and skipped from a different node first.
+        if (seenTurnIds[turn.id]) return;
+        seenTurnIds[turn.id] = true;
 
         // Fetch the exit segment (NOT connected to this node — it is at the far end of the path).
         var toSeg = sdk.DataModel.Segments.getById({ segmentId: turn.toSegmentId });
@@ -2866,10 +3061,29 @@
         // For Path turns: show only final square marker (single connecting-node angle)
         // Each marker shows the LOCAL turn angle at its connecting node.
 
-        // First, build blockedSteps map for JB turns (check restrictions once)
+        // Check restriction state: can be blocked at JB turn level or at intermediate nodes
+        // Track this so we can display gray marker instead of skipping entirely (for consistency with local turns)
+        var isPathRestricted = false;
+        var isFallbackJBTurn = !turn.isJunctionBoxTurn && turn.segmentPath && turn.segmentPath.length > 0;
+
+        // First check: Turn restriction set directly on the turn
+        if (turn.isJunctionBoxTurn && !turn.isAllowed) {
+          ja_log('[FAR-TURNS] JB turn ' + turn.id + ' restricted: turn.isAllowed=false', 2);
+          isPathRestricted = true;
+        }
+        // For fallback JB turns (from getAllPossibleTurns): treat as restricted if not explicitly allowed
+        // This is because JB turns are controlled by JB logic, and a missing "allowed" indicator likely means restriction
+        if (isFallbackJBTurn) {
+          // Show as restricted unless it clearly has an explicit "allowed" status from SDK
+          // Since getAllPossibleTurns may not fully reflect WME-set restrictions, be conservative
+          ja_log('[FAR-TURNS] Fallback JB turn ' + turn.id + ' marked as restricted (JB-controlled path)', 1);
+          isPathRestricted = true;
+        }
+
+        // Build blockedSteps map for JB turns and fallback JB turns (check local node restrictions)
         var blockedSteps = {};
         var pathHasBlockedStep = false; // Track if ANY step is blocked
-        if (turn.isJunctionBoxTurn) {
+        if (turn.isJunctionBoxTurn || isFallbackJBTurn) {
           for (var si = 0; si < pathSegs.length - 1; si++) {
             var stepFrom = pathSegs[si];
             var stepTo = pathSegs[si + 1];
@@ -2881,18 +3095,54 @@
               continue;
             }
             var stepNode = sdk.DataModel.Nodes.getById({ nodeId: stepNodeId });
-            if (stepNode == null || !ja_is_turn_allowed(stepFrom, stepNode, stepTo)) {
+            if (stepNode == null) {
               blockedSteps[si] = true;
               pathHasBlockedStep = true;
-              ja_log('[FAR-TURNS] Step ' + si + ' blocked: turn restriction', 3);
+              ja_log('[FAR-TURNS] Step ' + si + ' blocked: stepNode is null', 3);
+            } else {
+              var isAllowed = ja_is_turn_allowed(stepFrom, stepNode, stepTo);
+              if (!isAllowed) {
+                blockedSteps[si] = true;
+                pathHasBlockedStep = true;
+                ja_log('[FAR-TURNS] Step ' + si + ' blocked: turn restriction', 3);
+              }
+
+              // For fallback turns on final step: check JB turn instructions at entry node
+              // JB turn instructions are stored at the first node inside the JB (toNodeId of entry segment)
+              var isFinalStep = (si === pathSegs.length - 2);
+              if (isFallbackJBTurn && isFinalStep) {
+                // Entry node is toNodeId of the entry segment (where it crosses INTO JB)
+                var entryNodeId = fromSeg.toNodeId;
+                var jbTurnsAtEntry = sdk.DataModel.Turns.getTurnsThroughNode({ nodeId: entryNodeId });
+                var hasJBRestriction = jbTurnsAtEntry.some(function(t) {
+                  // Check if this turn matches our path AND has a restriction
+                  return t.fromSegmentId === turn.fromSegmentId && t.toSegmentId === turn.toSegmentId &&
+                         (!t.isAllowed || t.instructionOpCode !== null);
+                });
+                if (hasJBRestriction) {
+                  ja_log('[FAR-TURNS] Step ' + si + ' blocked by JB turn instruction at node ' + entryNodeId, 1);
+                  blockedSteps[si] = true;
+                  pathHasBlockedStep = true;
+                }
+              }
             }
           }
-          // If ANY intermediate step is blocked, this entire JB path is invalid - skip it
+          // If ANY intermediate step is blocked, mark path as restricted but continue to draw gray marker
           if (pathHasBlockedStep) {
-            ja_log('[FAR-TURNS] Skipping JB turn ' + turn.id + ' — internal node restriction blocks this path', 2);
-            return;
+            var turnTypeStr = turn.isJunctionBoxTurn ? 'JB' : 'fallback JB';
+            ja_log('[FAR-TURNS] ' + turnTypeStr + ' turn ' + turn.id + ' restricted: internal node restriction blocks this path', 2);
+            isPathRestricted = true;
           }
         }
+
+        // U-TURN TOTAL ANGLE ACCUMULATION
+        // ────────────────────────────────
+        // For U-TURN paths (instructionOpCode='UTURN'), accumulate all turn angles
+        // through the path. The final marker will display the total heading change
+        // (sum of all intermediate turns), not just the final step's local angle.
+        // This is more robust for non-parallel/irregular geometries.
+        var isUTurnPath = (turn.instructionOpCode === 'UTURN');
+        var uTurnAccumulatedAngle = 0;
 
         // Loop through each step and draw markers
         for (var stepIndex = 0; stepIndex < pathSegs.length - 1; stepIndex++) {
@@ -2934,6 +3184,11 @@
 
           var stepAngle = ja_angle_diff(stepInAngle, stepOutAngle, false);
 
+          // Accumulate for U-TURN total (regardless of whether this step is drawn)
+          if (isUTurnPath) {
+            uTurnAccumulatedAngle += stepAngle;
+          }
+
           // DEDUPLICATION: For intermediate steps, skip if already drawn
           if (!isFinalStep) {
             // Skip stepIndex 0 (entry node angle): already drawn by ja_draw_node_markers()
@@ -2970,16 +3225,31 @@
               : ja_routing_type.TURN;
           }
 
+          // If path is restricted (JB turn level or intermediate node), override to NO_TURN (gray marker)
+          // This applies to both final and intermediate steps so the entire path appears gray
+          if (isPathRestricted) {
+            stepMarkerType = ja_routing_type.NO_TURN;
+          }
+
           // Determine marker placement anchor
           var stepMarkerAnchor = stepConnectingNode;
           var stepExitBearing = stepOutAngle;
 
-          // For final JB step, place at JB boundary crossing (not at node)
-          if (isFinalStep && turn.isJunctionBoxTurn) {
+          // For final step, place at JB boundary crossing (not at node) if it's a JB or fallback JB turn
+          // This applies to:
+          // A) Turns with isJunctionBoxTurn flag (normal SDK behavior)
+          // B) Fallback turns from getAllPossibleTurns() that cross JB boundaries
+          //    (these have segmentPath but not the JB flag set)
+          var shouldRepositionToBoundary = isFinalStep && (turn.isJunctionBoxTurn || isFallbackJBTurn);
+
+          if (shouldRepositionToBoundary) {
             var bigJunction = null;
             var allBigJunctions = sdk.DataModel.BigJunctions.getAll();
+            var firstPathSegId = turn.segmentPath[0];
+
+            // Find the BigJunction containing the first path segment (median segment)
             for (var bji = 0; bji < allBigJunctions.length; bji++) {
-              if (allBigJunctions[bji].segmentIds.indexOf(turn.segmentPath[0]) !== -1) {
+              if (allBigJunctions[bji].segmentIds.indexOf(firstPathSegId) !== -1) {
                 bigJunction = allBigJunctions[bji];
                 break;
               }
@@ -2996,7 +3266,7 @@
                     ? candidate : best;
                 });
                 stepMarkerAnchor = { geometry: closestPt.geometry };
-                ja_log('[FAR-TURNS] Using JB boundary crossing for step ' + stepIndex, 3);
+                ja_log('[FAR-TURNS] Step ' + stepIndex + ': repositioned to JB boundary (isFallback=' + isFallbackJBTurn + ')', 2);
               }
             }
           }
@@ -3024,10 +3294,17 @@
           // Determine marker shape: round for intermediate, square for final
           var stepIsSquareMarker = isFinalStep;
 
-          ja_log('[FAR-TURNS] Drawing step ' + stepIndex + ' (final=' + isFinalStep + ', angle=' + stepAngle.toFixed(2) + '°, type=' + stepMarkerType + ')', 2);
+          // For U-TURN paths on final step, use accumulated total angle instead of local step angle
+          var angleToDisplay = stepAngle;
+          if (isUTurnPath && isFinalStep) {
+            angleToDisplay = uTurnAccumulatedAngle;
+            ja_log('[FAR-TURNS] U-TURN final step: using accumulated angle ' + uTurnAccumulatedAngle.toFixed(2) + '° instead of local angle ' + stepAngle.toFixed(2) + '°', 2);
+          }
+
+          ja_log('[FAR-TURNS] Drawing step ' + stepIndex + ' (final=' + isFinalStep + ', angle=' + angleToDisplay.toFixed(2) + '°, type=' + stepMarkerType + ')', 2);
 
           // Draw the marker (isFarTurn=true, isSquareMarker=stepIsSquareMarker)
-          ja_draw_marker(stepPoint, stepMarkerAnchor, stepJaLd, stepAngle, stepExitBearing, true, stepMarkerType, true, stepIsSquareMarker);
+          ja_draw_marker(stepPoint, stepMarkerAnchor, stepJaLd, angleToDisplay, stepExitBearing, true, stepMarkerType, true, stepIsSquareMarker);
         }
       });
     });
@@ -4401,7 +4678,7 @@
     sdk.Events.on({
       eventName: 'wme-data-model-objects-changed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'segments') {
+        if (payload.dataModelName === 'segments' && hasSelection()) {
           ja_calculate();
         }
       },
@@ -4409,7 +4686,7 @@
     sdk.Events.on({
       eventName: 'wme-data-model-objects-removed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'segments') {
+        if (payload.dataModelName === 'segments' && hasSelection()) {
           ja_calculate();
         }
       },
@@ -4419,7 +4696,7 @@
     sdk.Events.on({
       eventName: 'wme-data-model-objects-changed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'nodes') {
+        if (payload.dataModelName === 'nodes' && hasSelection()) {
           ja_calculate();
         }
       },
@@ -4427,7 +4704,7 @@
     sdk.Events.on({
       eventName: 'wme-data-model-objects-removed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'nodes') {
+        if (payload.dataModelName === 'nodes' && hasSelection()) {
           ja_calculate();
         }
       },
@@ -4441,16 +4718,11 @@
     //
     // We mirror the same pattern used for 'segments' and 'nodes' above: track the
     // data model and re-run ja_calculate() on change or removal events.
-    //
-    // Note: Path turns (isPathTurn) are stored as part of the Turns data model, not
-    // as a separate BigJunctions-style model. Path edits will trigger a re-render
-    // naturally when the user reselects — adding 'turns' tracking here would work too
-    // but may fire too broadly. Revisit if live path-edit updates are needed.
     sdk.Events.trackDataModelEvents({ dataModelName: 'bigJunctions' });
     sdk.Events.on({
       eventName: 'wme-data-model-objects-changed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'bigJunctions') {
+        if (payload.dataModelName === 'bigJunctions' && hasSelection()) {
           ja_calculate();
         }
       },
@@ -4458,17 +4730,29 @@
     sdk.Events.on({
       eventName: 'wme-data-model-objects-removed',
       eventHandler: function (payload) {
-        if (payload.dataModelName === 'bigJunctions') {
+        if (payload.dataModelName === 'bigJunctions' && hasSelection()) {
           ja_calculate();
         }
       },
     });
 
-    sdk.Events.on({ eventName: 'wme-map-zoom-changed', eventHandler: ja_calculate });
+
+    sdk.Events.on({
+      eventName: 'wme-map-zoom-changed',
+      eventHandler: function () {
+        if (hasSelection()) {
+          ja_calculate();
+        }
+      },
+    });
     sdk.Events.on({
       eventName: 'wme-map-move-end',
       eventHandler: function () {
-        if (sdk.Map.getZoomLevel() >= MIN_ZOOM_LEVEL && ja_getOption('roundaboutOverlayDisplay') === 'rOverAlways') {
+        // Guards: only run if roundabout overlay is set to "Always" and something is selected
+        if (ja_options.roundaboutOverlayDisplay !== 'rOverAlways' || !hasSelection()) {
+          return;
+        }
+        if (sdk.Map.getZoomLevel() >= MIN_ZOOM_LEVEL) {
           ja_calculate();
         }
       },

@@ -110,6 +110,74 @@ When all criteria are met, the marker appears **gray** (`noTurnColor`), indicati
 
 ---
 
+## Junction Box (JB) support
+
+A **Junction Box** (also called "BigJunction") is a complex intersection polygon in WME that contains multiple internal segments, nodes, and paths. JAI displays turn angles for both local turns at the first JB node and far-turn paths that cross through the entire JB.
+
+### Entry segment to Junction Box
+
+When you select a **segment that crosses INTO a Junction Box** (one endpoint outside the JB, the other inside), JAI shows two things:
+
+#### Local turn markers moved to JB boundary
+
+The first node inside the JB has local turns (angles at that node connecting to segments that exit the JB). Instead of showing these markers at the local node (where WME used to place them), JAI now moves them to the **JB boundary crossing point** where the exit segment leaves the JB. This matches where WME has placed the turn arrows and TIO/VIO restrictions.
+
+**Marker styling:**
+
+- **Shape:** Square (not circle) — distinguishes boundary markers from regular local turns
+- **Position:** Calculated using `turf.lineIntersect()` to find where the exit segment crosses the JB polygon, then placed at the closest intersection to the current node
+- **Angle:** The local turn angle at the first JB node
+
+**Example:** In an H-shaped JB with entry from the left:
+
+- Entry segment: outside → enters JB at first node (left side of H)
+- Local turns at that first node to exit segments: markers move to the right side of the H where those segments cross back out
+- All markers appear as **squares** to indicate they are at boundary crossing points
+
+#### Far-turn paths through JB
+
+When the entry segment connects to paths that traverse the JB (multiple intermediate segments before exiting), JAI shows **far-turn markers** for each complete path:
+
+- **Intermediate steps:** Circles placed at intermediate nodes along the path (breadcrumb trail)
+- **Final exit:** Square placed at the JB boundary crossing point
+- **Angle displayed:** See [U-turn paths](#u-turn-paths-through-jb) below
+
+### Median segments (100% inside JB)
+
+When you select a **segment that is 100% contained inside a Junction Box** (both endpoints inside), JAI treats it as a normal local segment:
+
+- No JB boundary logic is applied
+- Local turns display as circles at the node (regular behavior)
+- Markers are **not** moved to the boundary
+- All existing local-turn and double-turn logic applies unchanged
+
+This allows you to inspect a median segment's angles the same way you would any other segment.
+
+### U-turn paths through JB
+
+When a far-turn path through a JB has a **U-TURN instruction** set by the editor on the JB (via the turn instruction dropdown for that exit segment), JAI displays it with special handling:
+
+**Angle calculation:**
+The marker shows the **sum of all turn angles along the path** through the JB, not just the final connecting node's local angle. This is more robust for irregular or non-parallel junction geometries:
+
+- Path: Entry → Node1 → Node2 → Node3 → Exit
+- Angle displayed: `turn_at_Node1 + turn_at_Node2 + turn_at_Node3` = **accumulated total heading change**
+
+For a true U-turn with ~180° path geometry, this displays approximately 180° regardless of how the intermediate path zigzags.
+
+**Marker styling:**
+- **Shape:** Square (placed at JB boundary crossing point where exit segment leaves the JB)
+- **Color:** Purple (`uTurnInstructionColor`) — indicates explicit U-TURN instruction on the JB
+- **Intermediate breadcrumbs:** Circles at intermediate nodes (for visibility of path structure)
+
+**Suppression of local double-turn U-turns:**
+When an entry segment crosses INTO a JB, the local double-turn detection for that segment is **suppressed**. This prevents duplicate U-turn markers (one from local logic, one from JB far-turn logic) appearing at the same location. The JB's turn instruction takes precedence.
+
+- **Local double U-turns still work** for median segments (100% inside JB) and non-entry segments
+- Only entry-crossing segments have local double U-turns suppressed
+
+---
+
 ## Angle mode
 
 Controls **what angle value is calculated and where markers are placed**.
