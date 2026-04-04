@@ -299,7 +299,7 @@ When every exit in your selected path is within 15° of perpendicular, those mar
 
 ## Roundabout entry-exit view
 
-When you select a **roundabout entry road** or a **roundabout arc segment**, JAI shows a panoramic view of every valid exit from that entry point. This is the primary workflow for checking how a roundabout is classified and what instructions drivers will receive.
+When you select a **roundabout entry road** or a **roundabout arc segment**, JAI shows a panoramic view of every valid exit from that entry point. This is the primary workflow for checking how a roundabout is classified and what instructions drivers will receive. JAI also respects turn restrictions set on exits — restricted exits display as NO_TURN (gray) markers and work correctly in both RHT and LHT roundabouts.
 
 ### What triggers it
 
@@ -349,6 +349,16 @@ When any criterion fails, exits are labeled with an **ordinal** ("1st", "2nd", "
 | Simple              | `1st 67°` on one line                   |
 
 The triangle angle lets you compare each exit's geometry to the ±15° perpendicular threshold. Any exit more than 15° off a 90° multiple is the reason the roundabout is Non-Normal.
+
+### Turn restrictions at roundabout exits
+
+JAI detects local turn restrictions set on roundabout exits and displays them as **gray NO_TURN markers**:
+
+- **Unrestricted exits:** Display with full instruction colors (purple for U-Turn, green for Turn, white for BC, etc.)
+- **Restricted exits:** Display as gray (`noTurnColor`), indicating the turn is blocked
+- **Works in both RHT and LHT:** The restriction detection uses the SDK's `Turn.isAllowed` property, which correctly handles direction calculations for both right-hand and left-hand traffic countries
+
+When an exit has a local turn restriction set by an editor, JAI will override its normal marker color and display it as gray, making it visually distinct from unrestricted exits.
 
 ### Diameter marker (at the roundabout center)
 
