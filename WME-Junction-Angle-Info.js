@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.1
+// @version       3.1.2
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -423,13 +423,17 @@
           continue;
         }
 
-        // Roundabout arc selected: treat fromNode (in_n) as the entry point and show all
-        // exits — same view as selecting an entry segment connected at that same node.
+        // Roundabout arc selected: use the segment's entry node based on direction of travel.
+        // Show all exits from that entry — same view as selecting an entry segment connected at that node.
         var _selfeat = getselfeat();
         if (_selfeat.length === 1 && _selfeat[0].type === 'segment') {
           var _selSeg = sdk.DataModel.Segments.getById({ segmentId: _selfeat[0].id });
           if (_selSeg && _selSeg.junctionId !== null) {
-            ja_draw_roundabout_entry_exits(tmp_roundabout_id, ja_selected_roundabouts[tmp_roundabout].in_n, ja_label_distance);
+            // Determine entry node based on direction of travel (not geometric direction)
+            // isAtoB means traffic flows from fromNodeId to toNodeId; isBtoA means toNodeId to fromNodeId
+            var entryNodeForRA = _selSeg.isAtoB ? _selSeg.fromNodeId : _selSeg.toNodeId;
+            ja_log('[RA] Selected RA arc: isAtoB=' + _selSeg.isAtoB + ', isBtoA=' + _selSeg.isBtoA + ', entry node=' + entryNodeForRA, 2);
+            ja_draw_roundabout_entry_exits(tmp_roundabout_id, entryNodeForRA, ja_label_distance);
             continue;
           }
         }
@@ -1511,8 +1515,9 @@
       element.segmentIds.forEach(function (s) {
         var seg = sdk.DataModel.Segments.getById({ segmentId: s });
         ja_log(seg, 3);
-        nodes[seg.fromNodeId] = sdk.DataModel.Nodes.getById({ nodeId: seg.fromNodeId });
-        nodes[seg.toNodeId] = sdk.DataModel.Nodes.getById({ nodeId: seg.toNodeId });
+        // Guard against null node IDs (can happen with unsaved segments)
+        if (seg.fromNodeId) nodes[seg.fromNodeId] = sdk.DataModel.Nodes.getById({ nodeId: seg.fromNodeId });
+        if (seg.toNodeId) nodes[seg.toNodeId] = sdk.DataModel.Nodes.getById({ nodeId: seg.toNodeId });
       });
 
       ja_log(nodes, 3);
@@ -1521,10 +1526,18 @@
       var distances = [];
       Object.getOwnPropertyNames(nodes).forEach(function (name) {
         ja_log('Checking ' + name + ' distance', 3);
-        var dist = turf.distance(turf.point(nodes[name].geometry.coordinates), turf.point(center.coordinates)) * 1000;
-        distances.push(dist);
+        // Skip if node is null or doesn't have geometry (unsaved segments can cause this)
+        if (nodes[name] && nodes[name].geometry) {
+          var dist = turf.distance(turf.point(nodes[name].geometry.coordinates), turf.point(center.coordinates)) * 1000;
+          distances.push(dist);
+        }
       });
       ja_log(distances, 3);
+      // Skip circle drawing if no valid nodes (all were null due to unsaved segments)
+      if (distances.length === 0) {
+        ja_log('No valid nodes for roundabout overlay (unsaved segments?)', 2);
+        return;
+      }
       var meanDistM =
         distances.reduce(function (a, b) {
           return a + b;
@@ -2121,10 +2134,22 @@
    * @param {number} label_distance - Current label-distance in meters (used to offset markers).
    */
   function ja_draw_roundabout_entry_exits(junctionId, entryNodeId, label_distance) {
+    ja_log('[RA-ENTRY] Called with junctionId=' + junctionId + ', entryNodeId=' + entryNodeId, 2);
     var junction = sdk.DataModel.Junctions.getById({ junctionId: junctionId });
-    if (!junction) return;
+    if (!junction) {
+      ja_log('[RA-ENTRY] Junction not found!', 2);
+      return;
+    }
+    // Skip if entry node ID is null (can happen with unsaved segments)
+    if (!entryNodeId) {
+      ja_log('[RA-ENTRY] Entry node ID is null (unsaved segment?)', 2);
+      return;
+    }
     var entryNode = sdk.DataModel.Nodes.getById({ nodeId: entryNodeId });
-    if (!entryNode) return;
+    if (!entryNode) {
+      ja_log('[RA-ENTRY] Entry node not found!', 2);
+      return;
+    }
     var center = ja_coordinates_to_point(junction.geometry.coordinates);
     var centerPt = turf.point(center.coordinates);
     var entryPt = turf.point(entryNode.geometry.coordinates);
@@ -2156,11 +2181,16 @@
     var processedNodes = {};
     var exits = [];
 
+    ja_log('[RA-ENTRY] Roundabout has ' + junction.segmentIds.length + ' segments', 2);
     junction.segmentIds.forEach(function (segId) {
+      ja_log('[RA-ENTRY] Processing segment ' + segId, 3);
       var juncSeg = sdk.DataModel.Segments.getById({ segmentId: segId });
       if (!juncSeg) return;
 
       var exitNodeId = juncSeg.toNodeId;
+      // Skip segments with null node IDs (can happen with unsaved segments)
+      if (!exitNodeId) return;
+
       // Allow the entry node once (U-turn arc) but deduplicate everything else.
       // We track with a count so a second arc returning to the same node is still skipped.
       if (processedNodes.hasOwnProperty(String(exitNodeId))) return;
@@ -2169,17 +2199,47 @@
       var exitNode = sdk.DataModel.Nodes.getById({ nodeId: exitNodeId });
       if (!exitNode) return;
 
-      // Find the first drivable non-junction exit segment at this node
+      // Find the first exit segment at this node (not part of THIS roundabout, but may be part of another junction).
+      // Validate that traffic can actually LEAVE the roundabout node (not one-way INTO it).
       var exitSeg = null;
       exitNode.connectedSegmentIds.forEach(function (connSegId) {
         if (exitSeg) return;
         var s = sdk.DataModel.Segments.getById({ segmentId: connSegId });
-        if (!s || s.junctionId !== null) return;
-        if (sdk.DataModel.Turns.isTurnAllowedBySegmentDirections({ fromSegmentId: juncSeg.id, nodeId: exitNodeId, toSegmentId: s.id })) {
-          exitSeg = s;
+        if (!s) return;
+        // Skip segments that are part of THIS roundabout. Allow segments in other junctions or standalone.
+        if (s.junctionId === junctionId) {
+          ja_log('[RA-ENTRY]   Skipping ' + connSegId + ' (part of this RA)', 3);
+          return;
         }
+        // Accept exit if it can leave this node. Reject only if it's explicitly one-way INTO the node.
+        // Two-way segments (isAtoB !== isBtoA is false, meaning both true or both false) are always valid.
+        // One-way FROM this node: (isAtoB && fromNodeId=this) OR (isBtoA && toNodeId=this)
+        // One-way INTO this node (reject): (isAtoB && toNodeId=this) OR (isBtoA && fromNodeId=this)
+        var isOneWayInto = (s.isAtoB && s.toNodeId === exitNodeId && !s.isBtoA) || (s.isBtoA && s.fromNodeId === exitNodeId && !s.isAtoB);
+        if (isOneWayInto) {
+          ja_log('[RA-ENTRY]   Skipping ' + connSegId + ' (one-way INTO roundabout only)', 2);
+          return;
+        }
+
+        // For roundabouts, skip turn restriction checks: SDK's methods have direction-calculation
+        // quirks on junction arcs (especially in LHT countries). Local turn restrictions at RA
+        // exits are rare and will be visible via normal turn marker visualization on the map.
+        // TODO: Implement full JB path traversal to check each junction node locally.
+
+        ja_log('[RA-ENTRY]   Accepting ' + connSegId + '(jID=' + (s.junctionId || 'null') + ', isAtoB=' + s.isAtoB + ', isBtoA=' + s.isBtoA + ') as exit segment', 2);
+        exitSeg = s;
       });
-      if (!exitSeg) return;
+      if (!exitSeg) {
+        var debugSegs = 'connected segs: ';
+        exitNode.connectedSegmentIds.forEach(function(cid) {
+          var cs = sdk.DataModel.Segments.getById({ segmentId: cid });
+          if (cs) {
+            debugSegs += cid + '(jID=' + (cs.junctionId || 'null') + ') ';
+          }
+        });
+        ja_log('[RA-ENTRY] Node ' + exitNodeId + ' has no valid exit. ' + debugSegs, 2);
+        return;
+      }
 
       // CCW angle (0–360°) from entry to this exit, measured at the roundabout center.
       // In right-hand traffic (CCW roundabout): ~90° = Turn Right, ~180° = Straight, ~270° = Turn Left.
@@ -2190,6 +2250,7 @@
       } else {
         var bearingToExit = turf.bearing(centerPt, turf.point(exitNode.geometry.coordinates));
         ccwAngle = (bearingToEntry - bearingToExit + 360) % 360;
+        ja_log('[RA-DEBUG] exitNodeId=' + exitNodeId + ', bearingToEntry=' + ja_round(bearingToEntry) + '°, bearingToExit=' + ja_round(bearingToExit) + '°, ccwAngle=' + ja_round(ccwAngle) + '° (LHT=' + ja_is_left_hand_traffic + ')', 2);
       }
 
       // Triangle angle at center: entry_node → center → exit_node (always 0–180°).
@@ -2197,6 +2258,12 @@
       // Use 180° instead — the driver exits back along the same road in the opposite direction.
       var triAngle = exitNodeId === entryNodeId ? 180 : ja_angle_between_points(entryNode.geometry, center, exitNode.geometry);
       var isExitAngleNormal = ja_is_angle_normal(triAngle);
+
+      // Skip exits with invalid angles (can happen with unsaved segments)
+      if (isNaN(ccwAngle) || isNaN(triAngle)) {
+        ja_log('[RA-ENTRY] Skipping exit with NaN angle: ccwAngle=' + ccwAngle + ', triAngle=' + triAngle, 2);
+        return;
+      }
 
       exits.push({
         exitNodeId: exitNodeId,
@@ -2209,7 +2276,11 @@
       });
     });
 
-    if (exits.length === 0) return;
+    ja_log('[RA-ENTRY] Collected ' + exits.length + ' exits', 2);
+    if (exits.length === 0) {
+      ja_log('[RA-ENTRY] No exits found, returning', 2);
+      return;
+    }
 
     // ── Step 2: Determine overall roundabout normality for this entry ─────────
 
@@ -2222,7 +2293,8 @@
     var junctionNodeSet = {};
     junction.segmentIds.forEach(function (segId) {
       var s = sdk.DataModel.Segments.getById({ segmentId: segId });
-      if (s) junctionNodeSet[String(s.toNodeId)] = true;
+      // Skip segments with null node IDs (unsaved segments)
+      if (s && s.toNodeId) junctionNodeSet[String(s.toNodeId)] = true;
     });
     var totalJunctionNodes = Object.keys(junctionNodeSet).length;
     var isNodeCountNormal = totalJunctionNodes >= 2 && totalJunctionNodes <= 4;
@@ -2239,6 +2311,10 @@
 
     var isRoundaboutNormal = allAnglesNormal && isNodeCountNormal && isRadiusNormal;
     ja_log('Roundabout normal: ' + isRoundaboutNormal + ' (angles:' + allAnglesNormal + ' nodes:' + totalJunctionNodes + ' radius:' + ja_round(maxRadius) + 'm)', 2);
+    ja_log('[RA-DEBUG] All exits before sorting:', 4);
+    exits.forEach(function (e, idx) {
+      ja_log('[RA-DEBUG] Exit ' + idx + ': nodeId=' + e.exitNodeId + ', ccwAngle=' + ja_round(e.ccwAngle) + '°, triAngle=' + ja_round(e.triAngle) + '°', 2);
+    });
 
     // ── Center diameter marker ─────────────────────────────────────────────────
     // Shows the roundabout's diameter (maxRadius × 2) at the center point.
@@ -2255,7 +2331,21 @@
     // LHT (CW roundabout):  first exit encountered has largest ccwAngle  → sort descending.
     exits.sort(ja_is_left_hand_traffic ? function (a, b) { return b.ccwAngle - a.ccwAngle; } : function (a, b) { return a.ccwAngle - b.ccwAngle; });
 
+    // For LHT, after descending sort, the U-turn (ccwAngle=360) sorts first but should be last.
+    // Move it to the end if it's at index 0.
+    if (ja_is_left_hand_traffic && exits.length > 0 && exits[0].ccwAngle === 360) {
+      var uTurnExit = exits.shift(); // Remove from front
+      exits.push(uTurnExit);         // Add to back
+      ja_log('[RA-DEBUG] Moved U-turn from index 0 to end (LHT handling)', 2);
+    }
+
+    ja_log('[RA-DEBUG] After sort (LHT=' + ja_is_left_hand_traffic + '):', 2);
+    exits.forEach(function (e, idx) {
+      ja_log('[RA-DEBUG] Exit ' + idx + ': nodeId=' + e.exitNodeId + ', ccwAngle=' + ja_round(e.ccwAngle) + '°', 2);
+    });
+
     // ── Step 4: Draw exit legs and markers ───────────────────────────────────
+    var validExitOrdinal = 0; // Counter for non-normal roundabouts (skips restricted exits)
     exits.forEach(function (exit, index) {
       // Draw exit leg: roundabout center → exit node
       ja_add_feature({ type: 'LineString', coordinates: [center.coordinates, exit.exitNode.geometry.coordinates] }, { ja_type: 'arrow_line' });
@@ -2264,9 +2354,17 @@
       var exitLd = ja_corrected_ld(label_distance, exit.exitNode.geometry.coordinates);
       var point = turf.destination(turf.point(exit.exitNode.geometry.coordinates), (exitLd * 2) / 1000, ja_math_to_compass(exitBearing)).geometry;
 
+      // Check if this exit has a turn restriction
+      var isRestricted = exit.exitSeg._isRestricted === true;
+
       var markerType;
-      if (isRoundaboutNormal) {
-        // Classify by CCW angle from entry (right-hand/CCW traffic convention):
+      if (isRestricted) {
+        // Restricted exit: always display as NO_TURN (gray)
+        markerType = ja_routing_type.NO_TURN;
+        ja_log('[RA-DEBUG] Drawing restricted exit ' + index + ': nodeId=' + exit.exitNodeId + ', markerType=NO_TURN', 2);
+        ja_draw_marker(point, exit.exitNode, exitLd, exit.triAngle, exitBearing, true, markerType);
+      } else if (isRoundaboutNormal) {
+        // Normal roundabout with allowed exit: classify by CCW angle from entry
         //   ~90°  → Turn Right   (first exit going CCW)
         //   ~180° → Continue Straight
         //   ~270° → Turn Left    (last exit before U-turn)
@@ -2281,14 +2379,18 @@
         } else {
           markerType = ja_routing_type.TURN_LEFT;
         }
+        ja_log('[RA-DEBUG] Drawing exit ' + index + ': nodeId=' + exit.exitNodeId + ', ccw=' + ja_round(ccw) + '°, markerType=' + markerType, 2);
         // ja_draw_marker handles arrow characters and display-mode formatting,
         // exactly as it does for regular turn markers at intersections.
         ja_draw_marker(point, exit.exitNode, exitLd, exit.triAngle, exitBearing, true, markerType);
       } else {
-        // Non-normal: ordinal exit numbers in encounter order; no arrow needed.
+        // Non-normal roundabout: ordinal exit numbers in encounter order (skipping restricted exits)
+        // Only increment counter for allowed exits; restricted exits get NO_TURN marker
+        validExitOrdinal++;
+        ja_log('[RA-DEBUG] Drawing non-normal exit ' + index + ': nodeId=' + exit.exitNodeId + ', ordinal=' + validExitOrdinal, 2);
         // Direct feature add — ordinal string can't pass through ja_draw_marker's numeric 'a'.
         ja_add_feature(point, {
-          angle: ja_getOption('angleDisplay') === 'displaySimple' ? ordinal(index + 1) + ' ' + ja_round(exit.triAngle) + '°' : ordinal(index + 1) + '\n' + ja_round(exit.triAngle) + '°',
+          angle: ja_getOption('angleDisplay') === 'displaySimple' ? ordinal(validExitOrdinal) + ' ' + ja_round(exit.triAngle) + '°' : ordinal(validExitOrdinal) + '\n' + ja_round(exit.triAngle) + '°',
           ja_type: ja_routing_type.ROUNDABOUT, // "Non-Normal Exit Color" (roundaboutColor) setting
         });
       }
