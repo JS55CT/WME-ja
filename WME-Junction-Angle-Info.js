@@ -2221,12 +2221,20 @@
           return;
         }
 
-        // For roundabouts, skip turn restriction checks: SDK's methods have direction-calculation
-        // quirks on junction arcs (especially in LHT countries). Local turn restrictions at RA
-        // exits are rare and will be visible via normal turn marker visualization on the map.
-        // TODO: Implement full JB path traversal to check each junction node locally.
+        // Check for locally-set turn restrictions at this exit.
+        // Query all turns ending at the exit segment — if any are marked as not allowed, mark the exit as restricted.
+        var arcPath = ja_get_roundabout_arc_path(junctionId, entryNodeId, exitNodeId);
+        var isRestricted = false;
+        if (arcPath) {
+          isRestricted = ja_check_roundabout_arc_restricted(arcPath, s);
+        }
 
-        ja_log('[RA-ENTRY]   Accepting ' + connSegId + '(jID=' + (s.junctionId || 'null') + ', isAtoB=' + s.isAtoB + ', isBtoA=' + s.isBtoA + ') as exit segment', 2);
+        if (isRestricted) {
+          ja_log('[RA-ENTRY]   Exit ' + connSegId + ' has turn restriction, will display as NO_TURN', 2);
+          s._isRestricted = true;
+        }
+
+        ja_log('[RA-ENTRY]   Accepting exit ' + connSegId + (isRestricted ? ' (RESTRICTED)' : ''), 3);
         exitSeg = s;
       });
       if (!exitSeg) {
@@ -2395,6 +2403,143 @@
         });
       }
     });
+  }
+
+  /**
+   * Constructs the sequence of roundabout arc segments from entry node to exit node.
+   *
+   * Walks through the junction's arc segments starting at entryNodeId and following
+   * connected nodes until reaching exitNodeId. Returns the ordered list of segments
+   * that comprise the arc path (used for path traversal restriction checking).
+   *
+   * @param {number} junctionId - WME Junction ID (roundabout).
+   * @param {number} entryNodeId - Starting node ID.
+   * @param {number} exitNodeId - Ending node ID.
+   * @returns {Object[]|null} Array of SDK Segment objects forming the path, or null if path cannot be constructed.
+   */
+  function ja_get_roundabout_arc_path(junctionId, entryNodeId, exitNodeId) {
+    var junction = sdk.DataModel.Junctions.getById({ junctionId: junctionId });
+    if (!junction) return null;
+
+    var path = [];
+    var currentNodeId = entryNodeId;
+    var visited = {};
+    var maxSteps = junction.segmentIds.length + 1; // Prevent infinite loops
+
+    for (var step = 0; step < maxSteps && currentNodeId !== exitNodeId; step++) {
+      var nextSeg = null;
+
+      // Find the next unvisited segment connected to currentNodeId
+      for (var i = 0; i < junction.segmentIds.length; i++) {
+        var segId = junction.segmentIds[i];
+        if (visited[String(segId)]) continue;
+
+        var seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+        if (!seg) continue;
+
+        if (seg.fromNodeId === currentNodeId) {
+          nextSeg = seg;
+          currentNodeId = seg.toNodeId;
+          break;
+        } else if (seg.toNodeId === currentNodeId) {
+          nextSeg = seg;
+          currentNodeId = seg.fromNodeId;
+          break;
+        }
+      }
+
+      if (!nextSeg) break;
+
+      visited[String(nextSeg.id)] = true;
+      path.push(nextSeg);
+    }
+
+    return (currentNodeId === exitNodeId) ? path : null;
+  }
+
+  /**
+   * Checks for explicit local turn restrictions at a junction node.
+   *
+   * For roundabout arc segments, we check ONLY for explicit turn restrictions
+   * without performing direction calculation (which has LHT quirks for arc segments).
+   * This checks the Turn object's restrictions array to see if an editor set a local TR.
+   *
+   * @param {Object} s_from - SDK Segment object for the incoming road.
+   * @param {Object} via_node - SDK Node object at the junction.
+   * @param {Object} s_to - SDK Segment object for the outgoing road.
+   * @returns {boolean} True if a turn restriction explicitly blocks this turn.
+   */
+  function ja_is_turn_restricted(s_to) {
+    try {
+      // Query all turns ending at the exit segment and check if ANY are restricted.
+      // This avoids depending on exact arc path construction — we just need to know
+      // if there's a restricted turn to this exit from ANY arc segment.
+      var turnsTo = sdk.DataModel.Turns.getTurnsToSegment({ segmentId: s_to.id });
+
+      if (turnsTo && turnsTo.length > 0) {
+        for (var j = 0; j < turnsTo.length; j++) {
+          var turn = turnsTo[j];
+          // If ANY turn to this exit is restricted (isAllowed=false or has restrictions), mark the whole exit as restricted
+          if (!turn.isAllowed || (turn.restrictions && turn.restrictions.length > 0)) {
+            ja_log('[RA-PATH-RESTRICT] Exit ' + s_to.id + ' is restricted (turn ' + turn.id + ')', 3);
+            return true;
+          }
+        }
+      }
+
+      return false; // No restricted turns found
+    } catch (e) {
+      ja_log('[RA-PATH-RESTRICT] Error checking exit ' + s_to.id + ': ' + e.message, 2);
+      return false;
+    }
+  }
+
+  /**
+   * Validates turn restrictions along a roundabout arc path by checking each intermediate node.
+   *
+   * Replicates the far-turn path validation pattern: walks through arc segments and validates
+   * that a turn is allowed at each connecting node. If ANY intermediate turn is restricted,
+   * the entire arc path is marked as restricted.
+   *
+   * @param {Object[]} arcPath - Array of arc segments (from ja_get_roundabout_arc_path).
+   * @param {Object} exitSegment - The exit segment (where traffic leaves the roundabout).
+   * @returns {boolean} true if ANY step in the path is restricted, false if all steps allowed.
+   */
+  function ja_check_roundabout_arc_restricted(arcPath, exitSegment) {
+    if (!arcPath || arcPath.length === 0 || !exitSegment) {
+      ja_log('[RA-PATH-CHECK] Invalid input: arcPath=' + (arcPath ? arcPath.length : 'null') + ', exitSeg=' + (exitSegment ? 'yes' : 'null'), 2);
+      return false;
+    }
+
+    // Build the full sequence: [arcSeg1, ..., arcSegN, exitSeg]
+    var fullPath = arcPath.concat([exitSegment]);
+
+    // For roundabout arcs, we only check the FINAL step (arc→exit) for restrictions.
+    // Intermediate arc→arc turns are structural and don't have explicit restrictions that affect traffic flow.
+    // The only place an editor would set a local restriction is at the exit point.
+
+    var finalStepIndex = fullPath.length - 2;
+    if (finalStepIndex >= 0) {
+      var stepFrom = fullPath[finalStepIndex];
+      var stepTo = fullPath[finalStepIndex + 1];
+
+      // Find the connecting node between these two segments
+      var stepConnectingNodeId = ja_get_connecting_node(stepFrom, stepTo);
+      if (stepConnectingNodeId === null) {
+        return true; // Segments not adjacent
+      }
+
+      // Fetch the node (defensive check)
+      var stepConnectingNode = sdk.DataModel.Nodes.getById({ nodeId: stepConnectingNodeId });
+      if (!stepConnectingNode) {
+        return true; // Node not found
+      }
+
+      // Check for explicit turn restrictions at this exit
+      return ja_is_turn_restricted(stepTo);
+    }
+
+    return false;
   }
 
   /**
