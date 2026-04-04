@@ -104,7 +104,7 @@ When **enabled**, this setting applies Waze's algorithmic restriction to double-
 3. A and C within ±5° of parallel to each other
 4. Both A and C pass road-type qualification: Primary Street and above always qualify; Street, Parking Lot Road, and Private Road only qualify if their respective toggle settings are enabled
 
-When all criteria are met, the marker appears **gray** (`noTurnColor`), indicating the turn is **Waze-disallowed** due to the routing algorithm's penalty. If any condition fails, JAI falls back to the  defult Double-turn via short connector (purple for valid U-turns, orange/yellow for ambiguous cases).
+When all criteria are met, the marker appears **gray** (`noTurnColor`), indicating the turn is **Waze-disallowed** due to the routing algorithm's penalty. If any condition fails, JAI falls back to the defult Double-turn via short connector (purple for valid U-turns, orange/yellow for ambiguous cases).
 
 > **Why Street is off by default:** Street-class roads connecting across a median are common in dense areas and frequently produced false-positive U-turn warnings that were not actionable. Editors working in areas where Street-class medians are a genuine concern can enable the toggle.
 
@@ -113,6 +113,8 @@ When all criteria are met, the marker appears **gray** (`noTurnColor`), indicati
 ## Junction Box (JB) support
 
 A **Junction Box** (also called "BigJunction") is a complex intersection polygon in WME that contains multiple internal segments, nodes, and paths. JAI displays turn angles for both local turns at the first JB node and far-turn paths that cross through the entire JB.
+
+> **Note:** Far-turn display for Junction Boxes is controlled by the **"Enable JAI for Junction Boxes"** experimental toggle in the settings. It is **disabled by default** — enable it in the Experimental card to see far-turn markers.
 
 ### Entry segment to Junction Box
 
@@ -141,6 +143,7 @@ When the entry segment connects to paths that traverse the JB (multiple intermed
 - **Intermediate steps:** Circles placed at intermediate nodes along the path (breadcrumb trail)
 - **Final exit:** Square placed at the JB boundary crossing point
 - **Angle displayed:** See [U-turn paths](#u-turn-paths-through-jb) below
+- **Restrictions:** JAI respects JB turn restrictions; restricted paths display as gray (`noTurnColor`)
 
 ### Median segments (100% inside JB)
 
@@ -155,7 +158,7 @@ This allows you to inspect a median segment's angles the same way you would any 
 
 ### U-turn paths through JB
 
-When a far-turn path through a JB has a **U-TURN instruction** set by the editor on the JB (via the turn instruction dropdown for that exit segment), JAI displays it with special handling:
+When a far-turn path through a JB has a **U-TURN instruction** set by the editor on the JB (via the turn instruction dropdown for that exit segment), JAI displays it with special handling (visible when **"Enable JAI for Junction Boxes"** is turned on):
 
 **Angle calculation:**
 The marker shows the **sum of all turn angles along the path** through the JB, not just the final connecting node's local angle. This is more robust for irregular or non-parallel junction geometries:
@@ -166,6 +169,7 @@ The marker shows the **sum of all turn angles along the path** through the JB, n
 For a true U-turn with ~180° path geometry, this displays approximately 180° regardless of how the intermediate path zigzags.
 
 **Marker styling:**
+
 - **Shape:** Square (placed at JB boundary crossing point where exit segment leaves the JB)
 - **Color:** Purple (`uTurnInstructionColor`) — indicates explicit U-TURN instruction on the JB
 - **Intermediate breadcrumbs:** Circles at intermediate nodes (for visibility of path structure)
@@ -358,6 +362,77 @@ This immediately flags whether the physical size of the roundabout is disqualify
 ### Entry and exit leg lines
 
 JAI draws thin lines from the entry node to the center, and from the center to each exit node, forming the spokes of the roundabout. These visualize which exits are being evaluated and make it easy to correlate each marker with its road.
+
+---
+
+---
+
+## Path (FL2) support
+
+A **Path** (also called "far-lane phase 2" or "FL2") is a Waze feature that provides improved lane guidance and turn instructions through complex intersections. Unlike Junction Boxes (which control routing), Paths are guidance-only and can now support turn restrictions.
+
+### Entry segment to Path
+
+When you select a **segment that is part of a Path**, JAI displays **far-turn markers** showing the complete angle trail through the Path:
+
+- **Intermediate steps:** Circles placed at intermediate nodes along the Path (breadcrumb trail)
+- **Final exit:** Square placed at the junction node where the Path exits
+- **Colors:** Each marker is colored according to its local turn classification (Turn, Keep, Exit, U-Turn, etc.)
+
+**Marker styling:**
+
+- **Shape:** Circles for intermediate steps, square for final exit — matches Junction Box breadcrumb display
+- **Position:** Intermediate circles at connecting nodes between median segments; final square at the exit node
+- **Angles:** Each marker shows the local turn angle at its connecting node
+
+### Deduplication across multiple Paths
+
+When **multiple Paths traverse the same median segments**, JAI automatically deduplicates intermediate markers:
+
+- Each unique (node, angle) pair is only drawn once
+- The first Path to draw an intermediate marker "claims" it
+- Subsequent Paths skip that marker to avoid visual clutter
+- This allows complex intersections with overlapping Paths to remain clean and readable
+
+**Example:** Two Paths (A→B and C→B) that both cross through the same median segment M will share the same intermediate marker at M's connecting node — it appears once, not twice.
+
+### Path restrictions
+
+Paths now support turn restrictions (new feature in WME). JAI respects these restrictions:
+
+- **Unrestricted Path turns:** Display with full instruction colors (green for Turn, light green for Keep, light blue for Exit, purple for U-Turn, etc.)
+- **Restricted Path turns:** Display as gray (`noTurnColor`), indicating the turn is disallowed
+- **Restriction checking:** JAI checks the individual `turn.isAllowed` property for each Path turn
+
+---
+
+## Experimental features
+
+Two new experimental features allow you to control whether JAI displays far-turn angle information. Both are **disabled by default** — enable them in the **Experimental** settings card if you want to use them.
+
+### Enable JAI for Junction Boxes
+
+Displays **far-turn breadcrumb trails through Junction Boxes**:
+
+- When enabled: Selecting an entry segment shows circles at intermediate nodes and a square at the JB exit
+- When disabled: Only local node turns are shown; far-turn information is hidden
+- Use when: You need to trace complex paths through multi-node JBs to understand routing or identify missing turn restrictions
+
+**Related settings:**
+
+- Junction Box documentation is in the [Junction Box (JB) support](#junction-box-jb-support) section
+
+### Enable JAI for Paths
+
+Displays **far-turn breadcrumb trails through Paths**:
+
+- When enabled: Selecting a segment part of a Path shows circles at intermediate nodes and a square at the exit
+- When disabled: Only local node turns are shown; Path angle information is hidden
+- Use when: You need to verify lane guidance angles along far-lane routes, check for missing restrictions, or understand the complete turn sequence
+
+**Related settings:**
+
+- Path documentation is in the [Path (FL2) support](#path-fl2-support) section
 
 ---
 
