@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.3
+// @version       3.1.4
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -55,9 +55,9 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Version 3.0.3',
+    'Version 3.1.3',
     'Roundabout turn restriction detection — exits with local restrictions display as NO_TURN (gray), works for RHT and LHT countries',
-    'version 3.0.1',
+    'version 3.1.1',
     'Experimental: Far-turn angle display for Junction Boxes — breadcrumb trail through complex intersections (disabled by default)',
     'Experimental: Far-turn angle display for Paths — complete angle annotations along Path routes (disabled by default)',
   ];
@@ -298,16 +298,16 @@
     var ja_label_distance;
     switch (sdk.Map.getZoomLevel()) {
       case 22:
-        ja_label_distance = 1.5;
+        ja_label_distance = 1.2;
         break;
       case 21:
-        ja_label_distance = 3;
+        ja_label_distance = 2.2;
         break;
       case 20:
-        ja_label_distance = 7;
+        ja_label_distance = 4.5;
         break;
       case 19:
-        ja_label_distance = 10;
+        ja_label_distance = 8;
         break;
       case 18:
         ja_label_distance = 16;
@@ -694,9 +694,11 @@
    * @param {number[]} ja_selected_seg_ids - IDs of the user-selected segments. Passed through to
    *   ja_draw_far_turn_markers so it only draws far turns from the selected entry segment(s).
    *   Empty when a node (not a segment) is selected — in that case all entries are shown.
+   * @param {boolean} ja_is_pure_node_selection - True if a node is directly selected (not via segment).
+   *   When true, far-turn (Path/JB) markers are suppressed — show only the node's absolute angles.
    * @returns {boolean} True if a data error occurred and the calculation must be retried.
    */
-  function ja_draw_node_markers(ja_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids, allBigJunctions) {
+  function ja_draw_node_markers(ja_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids, allBigJunctions, ja_is_pure_node_selection) {
     var restart = false;
     //Start looping through selected nodes
     for (var i = 0; i < ja_nodes.length; i++) {
@@ -933,7 +935,8 @@
       //
       // Suppressed when any selected segment is a JB median: internal segments are handled
       // by the regular node-pair loop above; far-turn exit markers would be misleading.
-      if (ja_getOption('angleMode') === 'aDeparture' && !ja_selected_has_median) {
+      // Also suppressed when a pure node is selected: show only absolute angles at that node.
+      if (ja_getOption('angleMode') === 'aDeparture' && !ja_selected_has_median && !ja_is_pure_node_selection) {
         ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids, allBigJunctions);
       }
     }
@@ -1044,8 +1047,15 @@
     // Cache BigJunctions for the entire render pass — eliminates 5 separate .getAll() calls
     var allBigJunctions = sdk.DataModel.BigJunctions.getAll();
 
-    var ja_selected_roundabouts = ja_find_roundabouts(ja_nodes);
-    ja_draw_roundabout_markers(ja_selected_roundabouts, ja_label_distance);
+    // When a node is directly selected (not via segment selection), suppress roundabout/path/junction
+    // markers — show only the node's absolute angle markers (angles at that specific node).
+    var ja_is_pure_node_selection = ja_selfeat.length === 1 && ja_selfeat[0].type === 'node';
+
+    // Only draw roundabout and path/junction markers if NOT a pure node selection
+    if (!ja_is_pure_node_selection) {
+      var ja_selected_roundabouts = ja_find_roundabouts(ja_nodes);
+      ja_draw_roundabout_markers(ja_selected_roundabouts, ja_label_distance);
+    }
 
     // When a single roundabout arc is selected, ja_draw_roundabout_entry_exits already shows
     // all exit info relative to the arc's fromNode. Suppress ja_draw_node_markers so the
@@ -1081,7 +1091,7 @@
         return feat.id;
       });
 
-    if (ja_draw_node_markers(ja_marker_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids, allBigJunctions)) {
+    if (ja_draw_node_markers(ja_marker_nodes, ja_label_distance, doubleTurns, ja_selected_has_median, ja_selected_seg_ids, allBigJunctions, ja_is_pure_node_selection)) {
       return;
     }
 
