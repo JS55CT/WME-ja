@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.2
+// @version       3.1.3
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -55,6 +55,9 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
+    'Version 3.0.3',
+    'Roundabout turn restriction detection — exits with local restrictions display as NO_TURN (gray), works for RHT and LHT countries',
+    'version 3.0.1',
     'Experimental: Far-turn angle display for Junction Boxes — breadcrumb trail through complex intersections (disabled by default)',
     'Experimental: Far-turn angle display for Paths — complete angle annotations along Path routes (disabled by default)',
   ];
@@ -569,7 +572,7 @@
               var turn_type_path1 = ja_classify_uturn_angle(angle, lenRounded, fromSegment, toSegment, fromNode.id, toNode.id, hasLGFromToMedian);
 
               if (turn_type_path1 !== null) {
-                var useWazeRestriction = (turn_type_path1 === ja_routing_type.NO_U_TURN);
+                var useWazeRestriction = turn_type_path1 === ja_routing_type.NO_U_TURN;
 
                 // Collect if turns are allowed (same logic for both paths)
                 if (ja_is_turn_allowed(fromSegment, fromNode, segment) && ja_is_turn_allowed(segment, toNode, toSegment)) {
@@ -585,7 +588,7 @@
               var turn_type_path2 = ja_classify_uturn_angle(angle, lenRounded, toSegment, fromSegment, toNode.id, fromNode.id, hasLGToToMedian);
 
               if (turn_type_path2 !== null) {
-                useWazeRestriction = (turn_type_path2 === ja_routing_type.NO_U_TURN);
+                useWazeRestriction = turn_type_path2 === ja_routing_type.NO_U_TURN;
 
                 if (ja_is_turn_allowed(toSegment, toNode, segment) && ja_is_turn_allowed(segment, fromNode, fromSegment)) {
                   // When Waze restriction applies, always collect; otherwise check length/lane guidance
@@ -2239,7 +2242,7 @@
       });
       if (!exitSeg) {
         var debugSegs = 'connected segs: ';
-        exitNode.connectedSegmentIds.forEach(function(cid) {
+        exitNode.connectedSegmentIds.forEach(function (cid) {
           var cs = sdk.DataModel.Segments.getById({ segmentId: cid });
           if (cs) {
             debugSegs += cid + '(jID=' + (cs.junctionId || 'null') + ') ';
@@ -2258,7 +2261,20 @@
       } else {
         var bearingToExit = turf.bearing(centerPt, turf.point(exitNode.geometry.coordinates));
         ccwAngle = (bearingToEntry - bearingToExit + 360) % 360;
-        ja_log('[RA-DEBUG] exitNodeId=' + exitNodeId + ', bearingToEntry=' + ja_round(bearingToEntry) + '°, bearingToExit=' + ja_round(bearingToExit) + '°, ccwAngle=' + ja_round(ccwAngle) + '° (LHT=' + ja_is_left_hand_traffic + ')', 2);
+        ja_log(
+          '[RA-DEBUG] exitNodeId=' +
+            exitNodeId +
+            ', bearingToEntry=' +
+            ja_round(bearingToEntry) +
+            '°, bearingToExit=' +
+            ja_round(bearingToExit) +
+            '°, ccwAngle=' +
+            ja_round(ccwAngle) +
+            '° (LHT=' +
+            ja_is_left_hand_traffic +
+            ')',
+          2,
+        );
       }
 
       // Triangle angle at center: entry_node → center → exit_node (always 0–180°).
@@ -2337,13 +2353,21 @@
     // ── Step 3: Sort exits by CCW angle (order encountered going CCW from entry) ──
     // RHT (CCW roundabout): first exit encountered has smallest ccwAngle → sort ascending.
     // LHT (CW roundabout):  first exit encountered has largest ccwAngle  → sort descending.
-    exits.sort(ja_is_left_hand_traffic ? function (a, b) { return b.ccwAngle - a.ccwAngle; } : function (a, b) { return a.ccwAngle - b.ccwAngle; });
+    exits.sort(
+      ja_is_left_hand_traffic
+        ? function (a, b) {
+            return b.ccwAngle - a.ccwAngle;
+          }
+        : function (a, b) {
+            return a.ccwAngle - b.ccwAngle;
+          },
+    );
 
     // For LHT, after descending sort, the U-turn (ccwAngle=360) sorts first but should be last.
     // Move it to the end if it's at index 0.
     if (ja_is_left_hand_traffic && exits.length > 0 && exits[0].ccwAngle === 360) {
       var uTurnExit = exits.shift(); // Remove from front
-      exits.push(uTurnExit);         // Add to back
+      exits.push(uTurnExit); // Add to back
       ja_log('[RA-DEBUG] Moved U-turn from index 0 to end (LHT handling)', 2);
     }
 
@@ -2454,7 +2478,7 @@
       path.push(nextSeg);
     }
 
-    return (currentNodeId === exitNodeId) ? path : null;
+    return currentNodeId === exitNodeId ? path : null;
   }
 
   /**
@@ -2781,8 +2805,7 @@
     }
 
     // Check if median qualifies by length (default or extended with lane guidance)
-    var medianQualifies = (medianLen <= WAZE_MEDIAN_LENGTH_DEFAULT) ||
-                          (medianLen <= WAZE_MEDIAN_LENGTH_EXTENDED && hasLaneGuidanceOnA);
+    var medianQualifies = medianLen <= WAZE_MEDIAN_LENGTH_DEFAULT || (medianLen <= WAZE_MEDIAN_LENGTH_EXTENDED && hasLaneGuidanceOnA);
 
     if (!medianQualifies) {
       return null; // Median too long to qualify as U-turn
