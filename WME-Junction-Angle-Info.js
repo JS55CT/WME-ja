@@ -55,6 +55,8 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
+    'Version 3.1.4',
+    'More robust marker overlap prevention system',
     'Version 3.1.3',
     'Roundabout turn restriction detection — exits with local restrictions display as NO_TURN (gray), works for RHT and LHT countries',
     'version 3.1.1',
@@ -87,6 +89,13 @@
   var ja_roundabout_points = []; // GeoJSON Points of RA markers placed this pass (collision detection)
   var ja_current_features = []; // all features placed this render pass (overlap avoidance)
   var ja_feature_counter = 0; // monotonic counter; features are named 'ja_' + (++ja_feature_counter)
+
+  // ── Marker position tracking (for local/far-turn overlap prevention) ─────────────────────────
+  // Maps to track marker positions during a render pass so local and far-turn markers can coordinate.
+  // Structure: map<nodeId, array<{bearing, distance}>>
+  // Reset each render pass at start of testSelectedItem().
+  var ja_local_markers_by_node = {}; // Local turn markers indexed by node, with bearings and distances
+  var ja_far_turn_bearings_by_node = {}; // Far-turn markers indexed by node, with bearings and distances
 
   // ── UI state ──────────────────────────────────────────────────────────────
   var ja_sidebar_tabPane = null; // SDK tab pane element — retained so setupHtml() can re-render it
@@ -805,9 +814,24 @@
         point = turf.destination(turf.point(node.geometry.coordinates), (ja_extra_space_multiplier * ja_ld) / 1000, ja_math_to_compass(ha)).geometry;
         ja_draw_marker(point, node, ja_ld, a, ha, true, ja_junction_type);
 
+        // Record this local marker for far-turn conflict detection
+        // (Far-turn markers drawn later will check this data and adjust their distance if needed)
+        if (!ja_local_markers_by_node[node.id]) {
+          ja_local_markers_by_node[node.id] = [];
+        }
+        ja_local_markers_by_node[node.id].push({ bearing: ha, distance: ja_extra_space_multiplier * ja_ld });
+
         //draw double turn markers
+        // If there are double-turn markers at this node+bearing, offset them farther out
+        var doubleTurnMultiplier = ja_extra_space_multiplier;
         doubleTurns.forEachItem(ja_selected_angles[0][1], ja_selected_angles[1][1], function (item) {
-          ja_draw_marker(point, node, ja_ld, item.angle, ha, true, item.turn_type);
+          if (doubleTurnMultiplier === ja_extra_space_multiplier) {
+            // First double-turn found: use larger distance to separate from local marker
+            doubleTurnMultiplier = ja_extra_space_multiplier * 1.4;
+            ja_log('[DOUBLE-TURN] Offset double-turn markers at node ' + node.id + ' by 1.4x', 2);
+          }
+          var doubleTurnPoint = turf.destination(turf.point(node.geometry.coordinates), (doubleTurnMultiplier * ja_ld) / 1000, ja_math_to_compass(ha)).geometry;
+          ja_draw_marker(doubleTurnPoint, node, ja_ld, item.angle, ha, true, item.turn_type);
         });
       } else {
         //sort angle data (ascending)
@@ -877,9 +901,10 @@
                         markerAnchor = { geometry: closestPt.geometry };
                         isSquareMarker = true;
                         // Recalculate point from boundary anchor
+                        // Use larger distance (3.5x) to avoid overlapping with WME's turn restriction arrows at the boundary
                         var boundaryLd = ja_corrected_ld(ja_label_distance, markerAnchor.geometry.coordinates);
-                        point = turf.destination(turf.point(markerAnchor.geometry.coordinates), (boundaryLd * 2) / 1000, ja_math_to_compass(ha)).geometry;
-                        ja_log('[JAI] Entry-to-JB crossing: moving marker to boundary', 2);
+                        point = turf.destination(turf.point(markerAnchor.geometry.coordinates), (boundaryLd * 3.5) / 1000, ja_math_to_compass(ha)).geometry;
+                        ja_log('[JAI] Entry-to-JB crossing: moving marker to boundary (3.5x distance to avoid WME turn arrow overlap)', 2);
                         break;
                       }
                     }
@@ -900,14 +925,38 @@
               isSquareMarker,
             );
 
+            // Record this local marker for far-turn conflict detection
+            // (Far-turn markers drawn later will check this data and adjust their distance if needed)
+            if (!ja_local_markers_by_node[node.id]) {
+              ja_local_markers_by_node[node.id] = [];
+            }
+            ja_local_markers_by_node[node.id].push({ bearing: ha, distance: 2 * ja_ld });
+
             //draw double turn markers
+            // If there are double-turn markers at this node+bearing, offset them farther out
+            // Use larger offset if at JB boundary to avoid WME turn restriction arrows
+            var doubleTurnDepartureMult = isSquareMarker ? 4.2 : 2.7;
             doubleTurns.forEachItem(a_in[1], angle[1], function (item) {
-              ja_draw_marker(point, markerAnchor, ja_ld, item.angle, ha, true, item.turn_type, false, isSquareMarker);
+              if ((isSquareMarker && doubleTurnDepartureMult === 4.2) || (!isSquareMarker && doubleTurnDepartureMult === 2.7)) {
+                // First double-turn found at this anchor (boundary or node)
+                doubleTurnDepartureMult = isSquareMarker ? 4.9 : 3.3;
+                var boundarySuffix = isSquareMarker ? ' (at JB boundary)' : '';
+                ja_log('[DOUBLE-TURN] Offset double-turn markers at node ' + node.id + ' by ' + doubleTurnDepartureMult.toFixed(1) + 'x (departure mode)' + boundarySuffix, 2);
+              }
+              var doubleTurnDeparturePoint = turf.destination(turf.point(markerAnchor.geometry.coordinates), (doubleTurnDepartureMult * ja_ld) / 1000, ja_math_to_compass(ha)).geometry;
+              ja_draw_marker(doubleTurnDeparturePoint, markerAnchor, ja_ld, item.angle, ha, true, item.turn_type, false, isSquareMarker);
             });
           } else {
             ja_log('Angle between ' + angle[1] + ' and ' + angles[(j + 1) % angles.length][1] + ' is ' + a + ' and position for label should be at ' + ha, 3);
             point = turf.destination(turf.point(node.geometry.coordinates), (ja_ld * 1.25) / 1000, ja_math_to_compass(ha)).geometry;
             ja_draw_marker(point, node, ja_ld, a, ha);
+
+            // Record this local marker for far-turn conflict detection
+            // (Far-turn markers drawn later will check this data and adjust their distance if needed)
+            if (!ja_local_markers_by_node[node.id]) {
+              ja_local_markers_by_node[node.id] = [];
+            }
+            ja_local_markers_by_node[node.id].push({ bearing: ha, distance: 1.25 * ja_ld });
           }
         });
       }
@@ -948,7 +997,19 @@
       var farNode = sdk.DataModel.Nodes.getById({ nodeId: item.farNodeId });
       if (!farNode) return;
       var farLd = ja_corrected_ld(ja_label_distance, farNode.geometry.coordinates);
-      var pt = turf.destination(turf.point(farNode.geometry.coordinates), (farLd * 2) / 1000, ja_math_to_compass(item.exitBearing)).geometry;
+
+      // CHECK FOR LOCAL TURN MARKER CONFLICT AT FAR NODE
+      // If a local turn at this far node targets the same direction, move this far-exit marker out farther
+      var hasFarNodeConflict = ja_local_markers_by_node[item.farNodeId] &&
+                               ja_local_markers_by_node[item.farNodeId].some(function(ltMarker) {
+                                 return ja_markers_target_same_direction(item.exitBearing, ltMarker.bearing, 30);
+                               });
+      var farExitDist = hasFarNodeConflict ? 3.2 : 2.0;
+      if (hasFarNodeConflict) {
+        ja_log('[MARKER-OVERLAP] Far-exit double-turn conflict at node ' + item.farNodeId + ' bearing ' + item.exitBearing + ' — using 3.2x distance', 2);
+      }
+
+      var pt = turf.destination(turf.point(farNode.geometry.coordinates), (farExitDist * farLd) / 1000, ja_math_to_compass(item.exitBearing)).geometry;
       ja_draw_marker(pt, farNode, farLd, item.angle, item.exitBearing, true, item.turn_type);
     });
 
@@ -977,6 +1038,10 @@
     ja_roundabout_points = [];
     ja_current_features = [];
     ja_feature_counter = 0;
+
+    // Clear marker position tracking maps so local/far-turn conflict detection starts fresh
+    ja_local_markers_by_node = {};
+    ja_far_turn_bearings_by_node = {};
 
     // Cache traffic handedness for this render pass (used in ja_guess_routing_instruction and ja_draw_roundabout_entry_exits)
     ja_is_left_hand_traffic = (sdk.DataModel.Countries.getAll()[0] || {}).isLeftHandTraffic || false;
@@ -2883,6 +2948,27 @@
   }
 
   /**
+   * Determines if two compass bearings point in similar directions within a tolerance.
+   *
+   * Used to detect when local turn markers and far-turn markers target the same direction
+   * at a node, allowing the positioning system to layer them (local closer, far-turn farther).
+   *
+   * Accounts for 360° wraparound: e.g., 10° vs 350° differ by 20°, not 340°.
+   *
+   * @param {number} bearing1 - First compass bearing (0–360°, 0=North, CW).
+   * @param {number} bearing2 - Second compass bearing (0–360°).
+   * @param {number} tolerance - Maximum angle difference in degrees (suggested: 30–45°).
+   * @returns {boolean} True if bearings are within tolerance of each other.
+   */
+  function ja_markers_target_same_direction(bearing1, bearing2, tolerance) {
+    var diff = Math.abs(bearing1 - bearing2);
+    if (diff > 180) {
+      diff = 360 - diff; // Account for 360° wraparound
+    }
+    return diff <= tolerance;
+  }
+
+  /**
    * Converts a math angle (0=East, CCW) to a compass bearing (0=North, CW) for use with Turf.js.
    * Turf functions like turf.destination() expect compass bearings, not math angles.
    * Used in marker positioning throughout ja_draw_node_markers and ja_draw_far_turn_markers.
@@ -3579,8 +3665,33 @@
           // Apply extra-space multiplier for visibility
           var stepExtraSpace = ja_compute_extra_space(stepAngle, stepExitBearing);
 
+          // CHECK FOR LOCAL TURN MARKER CONFLICT
+          // If a local turn at this node targets the same direction, move this far-turn marker farther out
+          var hasLocalConflict = ja_local_markers_by_node[stepConnectingNodeId] &&
+                                 ja_local_markers_by_node[stepConnectingNodeId].some(function(ltMarker) {
+                                   return ja_markers_target_same_direction(stepExitBearing, ltMarker.bearing, 30);
+                                 });
+
+          // Check if we repositioned to JB boundary (stepMarkerAnchor !== stepConnectingNode)
+          var isAtBoundary = stepMarkerAnchor !== stepConnectingNode;
+
+          // Determine distance multiplier: prioritize boundary distance, then local conflict distance
+          var stepDistanceMultiplier = stepExtraSpace;
+          if (isAtBoundary) {
+            // At JB boundary: use larger distance to avoid overlapping with WME turn restriction arrows
+            stepDistanceMultiplier = 2.5;
+            if (hasLocalConflict) {
+              ja_log('[MARKER-OVERLAP] Far-turn at JB boundary + local conflict at node ' + stepConnectingNodeId + ' — using 2.5x boundary distance (takes precedence)', 2);
+            } else {
+              ja_log('[MARKER-OVERLAP] Far-turn at JB boundary for node ' + stepConnectingNodeId + ' — using 2.5x boundary distance', 2);
+            }
+          } else if (hasLocalConflict) {
+            stepDistanceMultiplier = 1.5;
+            ja_log('[MARKER-OVERLAP] Far-turn conflict at node ' + stepConnectingNodeId + ' bearing ' + stepExitBearing + ' — using 1.5x distance', 2);
+          }
+
           // Calculate marker position
-          var stepPoint = turf.destination(turf.point(stepMarkerAnchor.geometry.coordinates), (stepExtraSpace * stepJaLd) / 1000, ja_math_to_compass(stepExitBearing)).geometry;
+          var stepPoint = turf.destination(turf.point(stepMarkerAnchor.geometry.coordinates), (stepDistanceMultiplier * stepJaLd) / 1000, ja_math_to_compass(stepExitBearing)).geometry;
 
           // Determine marker shape: round for intermediate, square for final
           var stepIsSquareMarker = isFinalStep;
@@ -3596,6 +3707,12 @@
 
           // Draw the marker (isFarTurn=true, isSquareMarker=stepIsSquareMarker)
           ja_draw_marker(stepPoint, stepMarkerAnchor, stepJaLd, angleToDisplay, stepExitBearing, true, stepMarkerType, true, stepIsSquareMarker);
+
+          // Record this far-turn marker for local turn conflict detection
+          if (!ja_far_turn_bearings_by_node[stepConnectingNodeId]) {
+            ja_far_turn_bearings_by_node[stepConnectingNodeId] = [];
+          }
+          ja_far_turn_bearings_by_node[stepConnectingNodeId].push({ bearing: stepExitBearing, distance: stepDistanceMultiplier * stepJaLd });
         }
       });
     });

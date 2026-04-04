@@ -339,6 +339,276 @@ All far-turn logic is in `WME-Junction-Angle-Info-FAR-TURNS.js`:
 
 ---
 
+---
+
+## Marker Overlap Prevention System
+
+### Problem Statement
+
+When a junction node has multiple marker types positioned at similar bearings, visual overlap occurs:
+
+1. **Local turn + Far-turn conflict**: A direct node angle marker (local) and a far-turn breadcrumb marker (JB/Path) both target the same direction → overlap
+2. **Local turn + Double-turn conflict**: A direct angle marker and a U-turn double-turn marker overlap
+3. **JB boundary collision**: JAI markers anchored at JB boundary crossing points overlap with WME's native turn restriction arrow indicators (which are also drawn at the boundary)
+
+The solution layered three marker systems to separate them by distance, creating visual hierarchy instead of overlap.
+
+---
+
+### Solution Architecture
+
+**Core Concept**: Track all drawn markers by node and bearing, then adjust subsequent markers' distances if they conflict with already-drawn markers.
+
+**Three-Layer System**:
+
+1. **Local turn markers** — drawn first, recorded at normal distance
+2. **Double-turn markers** — drawn second, offset farther if conflicting
+3. **Far-turn markers** — drawn third, offset farther if conflicting
+
+This ordering ensures: local < double-turn < far-turn (visually nested).
+
+---
+
+### Global Data Structures
+
+**Initialized at start of `testSelectedItem()`, cleared each render pass:**
+
+```javascript
+var ja_local_markers_by_node = {};      // map<nodeId, array<{bearing, distance}>>
+var ja_far_turn_bearings_by_node = {}; // map<nodeId, array<{bearing, distance}>>
+```
+
+**Record structure**: `{ bearing: [0-360], distance: [meters] }`
+
+---
+
+### Conflict Detection Algorithm
+
+**Function**: `ja_markers_target_same_direction(bearing1, bearing2, tolerance)`
+
+```javascript
+// Returns true if two bearings point within 30° of each other
+var diff = Math.abs(bearing1 - bearing2);
+if (diff > 180) {
+  diff = 360 - diff;  // Handle 360° wraparound (e.g., 10° vs 350° = 20° apart)
+}
+return diff <= tolerance;  // tolerance = 30° (±15° half-cone)
+```
+
+**Why 30°?** Markers at ±15° from the same bearing occupy the same visual region. 30° is wide enough to catch most overlaps without false-triggering on markers in genuinely different directions.
+
+---
+
+### Execution Flow and Distance Multipliers
+
+#### Phase 1: Local Markers Drawn
+
+**2-Segment Mode** (two selected segments at a node):
+```
+Draw local marker at: extra_space_multiplier × ja_ld
+Record in ja_local_markers_by_node[node.id]
+```
+
+**Departure Mode** (multi-angle):
+```
+Draw local marker at: 2.0 × ja_ld  (normal)
+                      OR 2.0 × boundaryLd  (at JB boundary)
+Record in ja_local_markers_by_node[node.id]
+```
+
+**Absolute Mode** (adjacent segment pairs):
+```
+Draw local marker at: 1.25 × ja_ld
+Record in ja_local_markers_by_node[node.id]
+```
+
+#### Phase 2: Double-Turn Markers Drawn (Same Node, Same Bearing)
+
+**2-Segment Mode** (if double-turns exist):
+```
+if isAtJBBoundary:
+    distance = 4.9 × ja_ld      [move far out to avoid WME arrows]
+else:
+    distance = 1.4 × ja_ld      [offset from local marker]
+```
+
+**Departure Mode** (if double-turns exist):
+```
+if isAtJBBoundary:
+    distance = 4.9 × ja_ld      [avoid WME turn restriction arrows]
+else:
+    distance = 2.7 × ja_ld      [offset from local marker at 2.0x]
+```
+
+#### Phase 3: Far-Turn Markers Drawn (After Local & Double-Turn)
+
+**Far-turn checks for local marker conflicts:**
+
+```javascript
+var hasLocalConflict = ja_local_markers_by_node[nodeId] &&
+                       ja_local_markers_by_node[nodeId].some(function(ltMarker) {
+                         return ja_markers_target_same_direction(bearing, ltMarker.bearing, 30);
+                       });
+```
+
+**Distance decision tree:**
+
+```
+if marker is at JB boundary:
+    distance = 2.5 × ja_ld      [keep clear of WME turn arrows at boundary]
+else if hasLocalConflict:
+    distance = 1.5 × ja_ld      [offset from local marker]
+else:
+    distance = stepExtraSpace   [1.0–2.0x, normal positioning]
+```
+
+---
+
+### Distance Multiplier Reference
+
+**Complete hierarchy (no boundary, no conflict):**
+
+| Marker Type | Distance Multiplier | Context |
+|---|---|---|
+| Local (2-seg) | 1.0–2.0x | Determined by `ja_extra_space_multiplier` |
+| Local (departure) | 2.0x | Fixed for all departure-mode angles |
+| Local (absolute) | 1.25x | Fixed for all absolute-mode angles |
+| Double-turn | 1.4x (2-seg) <br> 2.7x (departure) | Offset from corresponding local |
+| Far-turn | 1.0–2.0x | Normal `stepExtraSpace` |
+
+**With conflicts:**
+
+| Scenario | Distance | Why |
+|---|---|---|
+| Double-turn + local conflict | 1.4x / 2.7x | Already uses conflict offset |
+| Far-turn + local conflict | 1.5x | Move farther out than local |
+| Any marker at JB boundary | 3.5x–4.9x | Avoid WME turn restriction arrows |
+
+**Why these specific values?**
+
+- **1.4x vs 1.0x base**: ~40% increase — visually clear separation
+- **2.7x vs 2.0x base**: ~35% increase — same visual ratio
+- **3.5x–4.9x at boundary**: ~75–145% increase — needs more space to clear WME indicators
+- **1.5x far-turn**: Places far-turn noticeably farther than local's 2.0x
+
+The ratios scale consistently across all modes, so the visual hierarchy remains stable.
+
+---
+
+### Special Case: JB Boundary Markers
+
+**Problem**: WME draws turn restriction arrow indicators at the exact point where a segment crosses a BigJunction boundary. JAI markers anchored there overlap with these arrows.
+
+**Detection**: After repositioning a marker to a JB boundary point:
+
+```javascript
+var isAtBoundary = stepMarkerAnchor !== stepConnectingNode;
+// stepMarkerAnchor was reassigned to { geometry: closestPt.geometry }
+// during JB boundary crossing detection
+```
+
+**Solution**: Use larger distance multipliers:
+
+- **Local markers at boundary**: `3.5 × ja_ld`
+- **Double-turn at boundary**: `4.9 × ja_ld`
+- **Far-turn at boundary**: `2.5 × ja_ld`
+
+These push JAI markers far enough out that WME's turn arrows remain visible at the boundary.
+
+---
+
+### Recording Phase
+
+After drawing each marker type, record it for downstream conflict detection:
+
+**In `ja_draw_node_markers()` after drawing local markers:**
+```javascript
+if (!ja_local_markers_by_node[node.id]) {
+  ja_local_markers_by_node[node.id] = [];
+}
+ja_local_markers_by_node[node.id].push({ 
+  bearing: ha, 
+  distance: actualDistanceUsed 
+});
+```
+
+**In `ja_draw_far_turn_markers()` after drawing far-turn markers:**
+```javascript
+if (!ja_far_turn_bearings_by_node[stepConnectingNodeId]) {
+  ja_far_turn_bearings_by_node[stepConnectingNodeId] = [];
+}
+ja_far_turn_bearings_by_node[stepConnectingNodeId].push({ 
+  bearing: stepExitBearing, 
+  distance: stepDistanceMultiplier * stepJaLd 
+});
+```
+
+---
+
+### Execution Ordering (Why It Matters)
+
+The system relies on this strict ordering:
+
+```
+1. Clear maps (start of testSelectedItem)
+2. Draw local markers → Record in ja_local_markers_by_node
+3. Draw double-turn markers (check ja_far_turn_bearings_by_node — empty, no offsets)
+4. Draw far-turn markers → Check ja_local_markers_by_node → Apply offsets
+5. Record far-turn in ja_far_turn_bearings_by_node
+```
+
+**Why local markers don't check far-turn conflicts:**
+- Far-turn markers are drawn AFTER local markers
+- At the time local markers draw, `ja_far_turn_bearings_by_node` is empty
+- No conflict to detect
+
+**Why far-turn markers CAN check local conflicts:**
+- Local markers are already drawn and recorded
+- `ja_local_markers_by_node` is populated
+- Far-turn can see conflicts and adjust distance
+
+This one-directional dependency prevents circular logic and simplifies the system.
+
+---
+
+### Debug Output
+
+When conflicts are detected, console logs appear:
+
+```
+[MARKER-OVERLAP] Far-turn conflict at node 12345 bearing 90 — using 1.5x distance
+[MARKER-OVERLAP] Far-turn at JB boundary for node 12345 — using 2.5x boundary distance
+[MARKER-OVERLAP] Far-exit double-turn conflict at node 12345 bearing 90 — using 3.2x distance
+[DOUBLE-TURN] Offset double-turn markers at node 12345 by 1.4x
+[DOUBLE-TURN] Offset double-turn markers at node 12345 by 2.7x (departure mode) (at JB boundary)
+```
+
+These help verify the system is operating correctly during development and debugging.
+
+---
+
+### Key Invariants
+
+1. **Single level of nesting**: Each render pass produces at most one offset per (nodeId, bearing) pair
+2. **Distance monotonicity**: If a conflict exists, the far marker is ALWAYS farther than the local marker
+3. **Boundary priority**: Boundary distance overrides local-conflict distance
+4. **Tolerance consistency**: All conflict checks use 30° (±15° half-cone) uniformly
+5. **No modification of drawn markers**: Once a marker is drawn, its position is fixed (offsets only apply to subsequent markers)
+
+---
+
+### Related Functions
+
+| Function | Role |
+|---|---|
+| `ja_markers_target_same_direction` | Bearing comparison with 360° wraparound |
+| `ja_corrected_ld` | Latitude correction for projected coordinates |
+| `ja_math_to_compass` | Math angle → compass bearing conversion |
+| `turf.destination` | Calculate offset point given distance and bearing |
+| `ja_draw_marker` | Position and draw individual marker (no conflict logic) |
+
+---
+
 ## Double-Turn Detection Design Reference
 
 ---
