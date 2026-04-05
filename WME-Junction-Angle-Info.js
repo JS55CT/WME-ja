@@ -55,6 +55,8 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
+    'Version 3.1.5',
+    'Intermediate breadcrumbs inside a JB inherit all the routing logic: road type hierarchy (Primary vs Street), left-hand traffic, best-continuation detection, and Keep/Exit classification.',
     'Version 3.1.4',
     'More robust marker overlap prevention system',
     'Version 3.1.3',
@@ -68,7 +70,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 2; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
+  var junctionangle_debug = 1; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
