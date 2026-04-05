@@ -3614,8 +3614,20 @@
             // FINAL STEP: apply turn.instructionOpCode override and check exit restriction
             stepMarkerType = ja_getOption('guess') ? ja_get_final_step_type(turn, stepConnectingNode, lastPathSegId, lastPathSeg, toSeg, stepAngle) : ja_routing_type.TURN;
           } else {
-            // INTERMEDIATE STEP: use local angle classification, no override
-            stepMarkerType = ja_getOption('guess') ? ja_classify_turn_angle(stepAngle) : ja_routing_type.TURN;
+            // INTERMEDIATE STEP: use full routing instruction logic to match local turn colors
+            // Build angles array for this node (all connected segments with their bearings)
+            var stepAngles = [];
+            stepConnectingNode.connectedSegmentIds.forEach(function (connSegId) {
+              var connSeg = sdk.DataModel.Segments.getById({ segmentId: connSegId });
+              if (connSeg) {
+                var connBearing = ja_getAngle(stepConnectingNodeId, connSeg);
+                if (connBearing != null) {
+                  stepAngles.push([connBearing, connSegId, false]);
+                }
+              }
+            });
+            // Apply full routing instruction logic, matching regular departure-mode turns
+            stepMarkerType = ja_getOption('guess') ? ja_guess_routing_instruction(stepConnectingNode, stepFrom.id, stepTo.id, stepAngles) : ja_routing_type.TURN;
           }
 
           // If path is restricted (JB turn level or intermediate node), override to NO_TURN (gray marker)
