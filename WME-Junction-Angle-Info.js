@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.4
+// @version       3.1.5
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -68,7 +68,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 1; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
+  var junctionangle_debug = 2; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
@@ -255,13 +255,19 @@
    *
    * Wraps sdk.Editing.getSelection() and maps each selected item to a plain object
    * with { id, type } so callers do not need to interact with the SDK selection model
-   * directly. Returns an empty array when nothing is selected.
+   * directly. Filters to only segments and nodes (the only types JAI supports).
+   * Returns an empty array when nothing is selected or only unsupported types are selected.
    *
-   * @returns {Array<{id: number, type: string}>} Selected features, or [] if none.
+   * @returns {Array<{id: number, type: string}>} Selected segments/nodes, or [] if none.
    */
   function getselfeat() {
     var sel = sdk.Editing.getSelection();
     if (!sel) {
+      return [];
+    }
+    // Only return segment and node selections — ignore all other types (bigJunction, venue, etc.)
+    var SUPPORTED_TYPES = { 'segment': true, 'node': true };
+    if (!SUPPORTED_TYPES[sel.objectType]) {
       return [];
     }
     return sel.ids.map(function (id) {
@@ -1085,24 +1091,16 @@
     } else {
       // Single feature — extract endpoint nodes from segment, or push node id directly
       ja_selfeat.forEach(function (element) {
-        switch (element.type) {
-          case 'node':
-            ja_nodes.push(element.id);
-            break;
-          case 'segment':
-            var seg = sdk.DataModel.Segments.getById({ segmentId: element.id });
-            if (seg && seg.fromNodeId != null && ja_nodes.indexOf(seg.fromNodeId) === -1) {
-              ja_nodes.push(seg.fromNodeId);
-            }
-            if (seg && seg.toNodeId != null && ja_nodes.indexOf(seg.toNodeId) === -1) {
-              ja_nodes.push(seg.toNodeId);
-            }
-            break;
-          case 'venue':
-            break;
-          default:
-            ja_log('Found unknown item type: ' + element.type, 1);
-            break;
+        if (element.type === 'node') {
+          ja_nodes.push(element.id);
+        } else if (element.type === 'segment') {
+          var seg = sdk.DataModel.Segments.getById({ segmentId: element.id });
+          if (seg && seg.fromNodeId != null && ja_nodes.indexOf(seg.fromNodeId) === -1) {
+            ja_nodes.push(seg.fromNodeId);
+          }
+          if (seg && seg.toNodeId != null && ja_nodes.indexOf(seg.toNodeId) === -1) {
+            ja_nodes.push(seg.toNodeId);
+          }
         }
         ja_log(ja_nodes, 4);
       });
