@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.5
+// @version       3.1.6
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -55,6 +55,8 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
+    'Version 3.1.6',
+    'Gray zone detection for Best Continuation ambiguity — flags angles in 22–30° and 44–47° zones as PROBLEM when BC matching fails, skips flagging for EXIT instructions',
     'Version 3.1.5',
     'Intermediate breadcrumbs inside a JB inherit all the routing logic: road type hierarchy (Primary vs Street), left-hand traffic, best-continuation detection, and Keep/Exit classification.',
     'Version 3.1.4',
@@ -107,6 +109,7 @@
   var TURN_ANGLE = 45.5; // degrees — boundary between a Keep and a Turn instruction (wiki: 45.04°)
   var U_TURN_ANGLE = 168.24; // degrees — boundary above which a turn is classified as a U-Turn
   var GRAY_ZONE = 1.5; // degrees — margin around TURN_ANGLE to absorb measurement noise
+  var AMBIGUOUS_KEEP_ANGLE = TURN_ANGLE / 2; // ~22.75° — center of ambiguous keep zone (22–30° where BC matching can fail)
   var OVERLAPPING_ANGLE = 0.666; // degrees — two segments closer than this are treated as collinear
   var MIN_ZOOM_LEVEL = 17; // hide all markers when zoomed out past this level
   var PERPENDICULAR_TOLERANCE = 15; // degrees — tolerance for ±15° of perpendicular (90° multiple) in roundabouts and angle classification
@@ -1352,6 +1355,20 @@
           bc_collect(a, 2);
         } else if (ja_segment_type_match(s_in, tmp_s_out)) {
           bc_collect(a, 1);
+        }
+      }
+
+      // Check if we're in a gray zone with ambiguous BC
+      // BUT: don't flag PROBLEM if this will become an EXIT (routing is determined by road types)
+      var absAngle = Math.abs(angle);
+      var isExitCase = (ja_is_primary_road(s_in) && !ja_is_primary_road(s_out[s_out_id])) ||
+                       (ja_is_ramp(s_in) && !ja_is_primary_road(s_out[s_out_id]) && !ja_is_ramp(s_out[s_out_id]));
+
+      if (!isExitCase && (bc_count !== 1 || (bc_matches[s_out_id] === undefined && bc_prio > 0))) {
+        if ((absAngle >= TURN_ANGLE - GRAY_ZONE && absAngle <= TURN_ANGLE + GRAY_ZONE) ||
+            (absAngle >= AMBIGUOUS_KEEP_ANGLE - GRAY_ZONE && absAngle <= AMBIGUOUS_KEEP_ANGLE + GRAY_ZONE)) {
+          ja_log('Gray zone with failed BC matching (count=' + bc_count + '): PROBLEM', 2);
+          return ja_routing_type.PROBLEM;
         }
       }
 
