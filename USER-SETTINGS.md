@@ -110,6 +110,37 @@ When all criteria are met, the marker appears **gray** (`noTurnColor`), indicati
 
 ---
 
+## Gray zone detection — Best Continuation ambiguity
+
+JAI flags angles that fall in **gray zones** where the Waze Best Continuation (BC) algorithm may produce unpredictable routing instructions because multiple candidate segments appear equally valid.
+
+### What are gray zones?
+
+Gray zones are angle ranges near decision boundaries where routing instruction classification becomes ambiguous:
+
+| Zone                    | Angle range | When flagged as PROBLEM                                                                                                                    |
+| ----------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **KEEP/TURN boundary**  | 44° – 47°   | When 2+ segments have nearly identical names or types, so the algorithm can't decide which is the "straight" continuation                  |
+| **Ambiguous KEEP**      | 22° – 30°   | When the incoming segment has shallow angles to multiple exits, making positional logic (leftmost/rightmost) unreliable                   |
+| **U-turn ambiguity**    | 166° – 170° | When angle is near 180° but unclear if Waze will route it as U-turn or regular turn (affected by median length and lane guidance)        |
+
+### When PROBLEM is NOT flagged
+
+**EXIT instructions:** When the turn qualifies as an EXIT (primary road → non-primary road, or ramp → non-primary road), the routing instruction is determined by road type classification, not angle ambiguity. JAI skips PROBLEM flagging for EXIT cases even if the angle falls in a gray zone, because the routing is unambiguous.
+
+**Clear BC winner:** If the BC algorithm finds a clear single candidate segment with the best name/type match, no PROBLEM flag is shown — routing is determined.
+
+### How to see it
+
+Select any segment or two connected segments. If any exit angle falls in a gray zone AND the BC algorithm can't determine a clear "straight" path, that marker displays as **PROBLEM** (colored with your configured "Angle to avoid" color, default `#feed40` yellow).
+
+**Example:**
+- At a 4-way intersection with two segments named "Main St" and one named "1st Ave", angles in the 44–47° zone would flag PROBLEM because the algorithm cannot decide which "Main St" is the true continuation
+- A 25° angle to a non-primary road from a primary road → flags as EXIT instead (no PROBLEM)
+- A 25° angle with clear BC matching → displays as KEEP_LEFT or KEEP_RIGHT (no PROBLEM)
+
+---
+
 ## Junction Box (JB) support
 
 A **Junction Box** (also called "BigJunction") is a complex intersection polygon in WME that contains multiple internal segments, nodes, and paths. JAI displays turn angles for both local turns at the first JB node and far-turn paths that cross through the entire JB.
