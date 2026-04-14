@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.2.1
+// @version       3.2.2
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -57,7 +57,7 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Version 3.2.1',
+    'Version 3.2.2',
     'Small bug fix',
     'Version 3.2.0',
     'Experimenmtal: "Scan for Angles to Avoid" feature: background detection of PROBLEM angles replaces the need for the BJAI script!',
@@ -76,7 +76,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 3; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
+  var junctionangle_debug = 1; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
