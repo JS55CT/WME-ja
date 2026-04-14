@@ -1,34 +1,37 @@
 # Continuous Problem Detection - Gray Zone Checklist
 
 ## Overview
-The continuous problem scanner detects turns in two gray zone ranges where Best Continuation (BC) matching fails, making routing instruction classifications unreliable. When BC matching is ambiguous (bc_count ≠ 1) within these zones, angles are flagged as PROBLEM. All flagged turns display with the "Angle to avoid" (red) color.
+
+The continuous problem scanner detects turns in two gray zone ranges where Best Continuation (BC) matching fails, making routing instruction classifications unreliable. When BC matching is ambiguous (bc_count ≠ 1) within these zones, angles are flagged as PROBLEM. All flagged turns display with the "Angle to avoid" color.
+
+**Updated:** Bidirectional pair evaluation now ensures all segment combinations are checked (both A→B and B→A), fixing the issue where PROBLEM angles were missed due to segment ordering.
 
 ---
 
 ## Gray Zone 1: KEEP/TURN Boundary
-**Display Angle Range:** 44° - 47°  
-**Raw Angle Range:** 133° - 136°  
-**Routing Types:** KEEP_LEFT, KEEP_RIGHT, TURN_LEFT, TURN_RIGHT  
-**Issue:** Best Continuation filtering may classify as KEEP when geometrically closer to TURN
+
+**Angle Range:** 44° - 47° (TURN_ANGLE ± GRAY_ZONE = 45.5° ± 1.5°)  
+**Routing Types:** KEEP_LEFT, KEEP_RIGHT, TURN_LEFT, TURN_RIGHT (ambiguous boundary)  
+**Issue:** Best Continuation matching is ambiguous — the algorithm cannot determine a clear "straight" path, making KEEP vs TURN classification unpredictable
 
 - [ ] Test: Find junction with 44.5° angle
-- [ ] Verify: Marker displays as red (PROBLEM type)
-- [ ] Verify: Angle label shows as 44° (not raw 136°)
-- [ ] Verify: Only one marker (not bidirectional duplicate)
+- [ ] Verify: Marker displays as orange/red (PROBLEM type)
+- [ ] Verify: Angle label shows as 44.5° (or your decimal setting)
+- [ ] Verify: Continuous scan AND on-demand mode both detect it
 - [ ] Verify: Marker placed at correct bearing from node
 
 ---
 
 ## Gray Zone 2: U-Turn Gray Zone
-**Display Angle Range:** 10° - 14°  
-**Raw Angle Range:** 166° - 170°  
-**Routing Types:** PROBLEM (explicitly flagged by ja_classify_turn_angle)  
-**Issue:** Unpredictable routing; could be U-turn or regular turn depending on median length, restrictions
 
-- [ ] Test: Find junction with 169° angle (node 7464024 from previous test)
-- [ ] Verify: Marker displays as red (PROBLEM type)
-- [ ] Verify: Angle label shows as ~11° (180 - 169)
-- [ ] Verify: Only one marker (not bidirectional duplicate)
+**Angle Range:** 166° - 170° (U_TURN_ANGLE ± GRAY_ZONE = 168.24° ± 1.5°)  
+**Routing Types:** PROBLEM (explicitly flagged by ja_classify_turn_angle)  
+**Issue:** Angle near 180° but unclear if Waze will route it as U-turn or regular turn; affected by median length and lane guidance
+
+- [ ] Test: Find junction with 169° angle
+- [ ] Verify: Marker displays as orange/red (PROBLEM type)
+- [ ] Verify: Angle label shows as 169° (or your decimal setting)
+- [ ] Verify: Continuous scan AND on-demand mode both detect it
 - [ ] Verify: Marker placed at correct bearing from node
 
 ---
@@ -36,10 +39,11 @@ The continuous problem scanner detects turns in two gray zone ranges where Best 
 ## Cache Performance Tests
 
 - [ ] Test: Pan away and back to same area - markers should appear instantly (cache hit)
-- [ ] Verify: Debug log shows "cache hit: PROBLEM"
+- [ ] Verify: Debug log shows "PHASE 1 complete" with cache hits
 - [ ] Test: Edit a segment at a cached node - verify cache is invalidated
-- [ ] Verify: Debug log shows cache recalculation after edit
+- [ ] Verify: Debug log shows cache recalculation after edit with "Cleared layer" message
 - [ ] Test: Zoom in/out at same location - markers should persist (cache still valid)
+- [ ] Verify: Bidirectional pair evaluation finds all PROBLEM angles regardless of segment order
 
 ---
 
