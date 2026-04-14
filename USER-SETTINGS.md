@@ -120,15 +120,16 @@ Gray zones are angle ranges near decision boundaries where routing instruction c
 
 | Zone                    | Angle range | When flagged as PROBLEM                                                                                                                    |
 | ----------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **KEEP/TURN boundary**  | 44° – 47°   | When 2+ segments have nearly identical names or types, so the algorithm can't decide which is the "straight" continuation                  |
-| **Ambiguous KEEP**      | 22° – 30°   | When the incoming segment has shallow angles to multiple exits, making positional logic (leftmost/rightmost) unreliable                   |
+| **KEEP/TURN boundary**  | 44° – 47°   | Angle is in the boundary zone AND Best Continuation matching fails (no single BC candidate)                                              |
 | **U-turn ambiguity**    | 166° – 170° | When angle is near 180° but unclear if Waze will route it as U-turn or regular turn (affected by median length and lane guidance)        |
 
 ### When PROBLEM is NOT flagged
 
 **EXIT instructions:** When the turn qualifies as an EXIT (primary road → non-primary road, or ramp → non-primary road), the routing instruction is determined by road type classification, not angle ambiguity. JAI skips PROBLEM flagging for EXIT cases even if the angle falls in a gray zone, because the routing is unambiguous.
 
-**Clear BC winner:** If the BC algorithm finds a clear single candidate segment with the best name/type match, no PROBLEM flag is shown — routing is determined.
+**Clear BC winner:** If the BC algorithm finds a clear single candidate segment with the best name/type match (bc_count === 1), no PROBLEM flag is shown — routing is determined.
+
+**Under 44°:** Angles below 44° are classified as KEEP based on positional logic (leftmost/rightmost), regardless of BC state. No gray zone flagging.
 
 ### How to see it
 
@@ -447,6 +448,55 @@ Paths now support turn restrictions (new feature in WME). JAI respects these res
 
 ---
 
+## Guess Routing & Override Instructions
+
+Controls how JAI predicts and displays turn instructions.
+
+### Guess Routing
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| **Guess Routing** | On | Enable/disable Waze routing instruction prediction. When ON, JAI calculates what instruction each turn will receive based on angles and Best Continuation logic. When OFF, only manually-set override instructions are shown. |
+
+When Guess Routing is **enabled**, all instruction color settings (Keep, Turn, Exit, U-Turn, Continue, etc.) and PROBLEM detection become active. When **disabled**, only override instructions render (if any are set).
+
+### Override Instructions & Angle Display
+
+| Setting                                 | Default | Dependencies                              | Effect |
+| --------------------------------------- | ------- | ------------------------------------------ | ------ |
+| **Show override instructions**          | On      | —                                          | Detect and display turn instructions that editors have manually set on turn restrictions. When enabled, these override the guessed routing type. |
+| **Show angles of override instruction** | Off     | Requires "Show override instructions" enabled | When enabled, displays the angle number alongside override instruction markers. When disabled, only the instruction arrow/type is shown. |
+
+### Instruction Color Settings
+
+These colors are used to display markers for each routing instruction type. They are **only active when "Guess Routing" is enabled**.
+
+| Instruction Type              | Setting Name                  | Default Color    | Used for |
+| ----------------------------- | ----------------------------- | ---------------- | -------- |
+| **Continue (Straight)**       | Continue instruction color    | White (`#ffffff`)     | A segment that continues straight through a junction (Best Continuation match with angle < 45°) |
+| **Keep Left / Keep Right**    | Keep instruction color        | Light green (`#cbff84`)  | Exits at 22–45°; the driver stays on the same road conceptually |
+| **Turn Left / Turn Right**    | Turn instruction color        | Dark green (`#4cc600`)   | Exits at 45–169°; a distinct directional change |
+| **Exit Left / Exit Right**    | Exit instruction color        | Light blue (`#6cb5ff`)   | Downgrade from highway/primary → secondary road, or ramp → non-ramp |
+| **U-Turn**                    | U-Turn instruction color      | Purple (`#b66cff`)       | Reversal near 180°; classified as U-turn by Waze |
+| **No Turn (Blocked)**         | No Turn color                 | Gray (`#a0a0a0`)         | Turn restriction is active; this turn is disallowed |
+| **No Instruction**            | No Instruction color          | White (`#ffffff`)        | Junction nodes with only 2 segments (no choice of exits; Waze gives no instruction) |
+| **PROBLEM (Gray zone)**       | Angle to avoid color          | Yellow (`#feed40`)       | Angles in gray zones (44–47°, 166–170°, or 22–30°) where Best Continuation matching is ambiguous and the routing instruction is unpredictable |
+
+To customize a color, click its color picker in the JAI settings sidebar.
+
+---
+
+## Display Customization
+
+Fine-tune the visual appearance of angle markers and labels.
+
+| Setting            | Type   | Default | Min–Max | Effect |
+| ------------------ | ------ | ------- | ------- | ------ |
+| **Marker size**    | Number | 12      | 6–20    | Radius of circle/square markers in pixels. Larger values make markers more prominent; smaller values reduce clutter in dense areas. |
+| **Decimal places** | Number | 2       | 0–2     | Precision of angle numbers. 0 = whole degrees (45°), 1 = one decimal (45.2°), 2 = two decimals (45.23°). |
+
+---
+
 ## Experimental features
 
 Two new experimental features allow you to control whether JAI displays far-turn angle information. Both are **disabled by default** — enable them in the **Experimental** settings card if you want to use them.
@@ -474,6 +524,40 @@ Displays **far-turn breadcrumb trails through Paths**:
 **Related settings:**
 
 - Path documentation is in the [Path (FL2) support](#path-fl2-support) section
+
+### Continuous Scanning
+
+Enables **background scanning of all viewport nodes** to continuously display PROBLEM angle markers without requiring selection.
+
+#### How it works
+
+- **When enabled:** JAI continuously scans all nodes visible in the viewport and displays PROBLEM markers (angles where Best Continuation matching is ambiguous) in the background
+- **When disabled:** Background scanning stops; only on-demand markers appear when you select a segment
+- **Cache strategy:** Results are cached per node for 2 minutes to avoid redundant recalculation; segment edits immediately invalidate affected nodes' cache entries
+- **Selection priority:** When you select a segment, on-demand markers appear and continuous markers hide; when you deselect, continuous markers reappear
+- **Layer-aware:** Respects the JAI layer power button — turning off the layer automatically stops scanning
+
+#### Marker display
+
+- **Only PROBLEM angles are shown** in continuous mode (not TURN, KEEP, BC, or other types) to reduce visual clutter
+- **Same styling as on-demand mode** — colors and shapes match your configured angle display style
+- **No markers when layer is hidden** — the layer power button or layer switcher turning off the layer suppresses continuous scanning entirely
+
+#### Performance
+
+- **Incremental batching:** Scans are batched (20 nodes at a time, 50 ms apart) to keep the editor responsive; 500 nodes spreads across ~2.5 seconds
+- **Zoom/pan responsive:** Pan and zoom events trigger rescans with a 100 ms debounce to coalesce rapid events
+- **Cache reuse:** Second and subsequent scans are much faster because unexpired cache hits skip recalculation
+
+#### Use when
+
+- You want to quickly spot PROBLEM junctions across an entire area without individually selecting each node
+- You're editing a large region and want to see potential routing issues highlighted in real-time
+- You want a visual survey of gray-zone detection results across your current viewport
+
+#### Disabled by default
+
+This feature is **optional and disabled by default** to avoid unnecessary background processing. Enable it in the **Experimental** settings card if you need background problem detection.
 
 ---
 

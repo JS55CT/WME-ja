@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.1.6
+// @version       3.2.0
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -42,7 +42,9 @@
  *  2019 "Sapozhnik"                 Ukrainian translation
  *       "ccclxv"                    British English (UK) translation
  *  2024 "g1220k"                    Contributions
- *  2026 "JS55CT"                    Current maintainer; SDK migration, RoundAbout support, JB and Paths
+ *  2026 "JS55CT"                    V3.0.0 Current maintainer; SDK migration,
+ *                                   V3.1.0 - 3.1.5 RoundAbout support, JB and Paths
+ *                                   V3.2.0  Added Continuous scanning for problem angles
  */
 
 /*global I18n, $, bootstrap, turf, getWmeSdk, SDK_INITIALIZED, GM_info, GM_xmlhttpRequest*/
@@ -55,8 +57,8 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Version 3.1.6',
-    'Gray zone detection for Best Continuation ambiguity — flags angles in 22–30° and 44–47° zones as PROBLEM when BC matching fails, skips flagging for EXIT instructions',
+    'Version 3.2.0',
+    'Experimenmtal: "Scan for Angles to Avoid" feature: background detection of PROBLEM angles replaces the need for the BJAI script!',
     'Version 3.1.5',
     'Intermediate breadcrumbs inside a JB inherit all the routing logic: road type hierarchy (Primary vs Street), left-hand traffic, best-continuation detection, and Keep/Exit classification.',
     'Version 3.1.4',
@@ -104,12 +106,26 @@
   // ── UI state ──────────────────────────────────────────────────────────────
   var ja_sidebar_tabPane = null; // SDK tab pane element — retained so setupHtml() can re-render it
 
+  // ── Continuous Scanning State (Phase 1: Cache + Event Infrastructure) ────────────────────
+  // Persistent cache survives across render passes (unlike ja_current_features which clears each pass)
+  var ja_continuous_cache = {};                   // { nodeId: { timestamp, angles: [] } } — cross-render persistent
+  var ja_continuous_rendered = new Set();         // Track which angle markers already rendered to prevent duplicates
+  var ja_continuous_mode = false;                 // Feature flag: continuous scanning enabled/disabled
+  var ja_continuous_scan_timer = null;            // Debounce timer (100ms, separate from ja_calculation_timer)
+  var ja_continuous_batch_index = 0;              // Track progress in batch scan (for incremental processing)
+  var ja_nodes_all = [];                          // Copy of all viewport nodes (refreshed each scan start)
+  var ja_continuous_enabled = false;              // Load from localStorage on init
+  var ja_continuous_needs_batching = [];          // Nodes that need cache calculation (misses)
+
   // ── Angle classification thresholds ──────────────────────────────────────
   // Waze routing instruction boundaries derived from map experiments and the Waze wiki.
   var TURN_ANGLE = 45.5; // degrees — boundary between a Keep and a Turn instruction (wiki: 45.04°)
   var U_TURN_ANGLE = 168.24; // degrees — boundary above which a turn is classified as a U-Turn
   var GRAY_ZONE = 1.5; // degrees — margin around TURN_ANGLE to absorb measurement noise
-  var AMBIGUOUS_KEEP_ANGLE = TURN_ANGLE / 2; // ~22.75° — center of ambiguous keep zone (22–30° where BC matching can fail)
+
+  // ── Timing configuration for continuous scanning ──────────────────────────
+  var BATCH_PROCESSING_DELAY = 50;     // milliseconds — delay between incremental batch processing cycles
+  var CONTINUOUS_SCAN_DEBOUNCE = 100;  // milliseconds — debounce window for coalescing rapid pan/zoom/edit events
   var OVERLAPPING_ANGLE = 0.666; // degrees — two segments closer than this are treated as collinear
   var MIN_ZOOM_LEVEL = 17; // hide all markers when zoomed out past this level
   var PERPENDICULAR_TOLERANCE = 15; // degrees — tolerance for ±15° of perpendicular (90° multiple) in roundabouts and angle classification
@@ -228,6 +244,8 @@
     enableFarTurnPath: { elementType: 'checkbox', elementId: '_jaCbEnableFarTurnPath', defaultValue: false, group: 'experimental' },
     decimals: { elementType: 'number', elementId: '_jaTbDecimals', defaultValue: 2, min: 0, max: 2 },
     pointSize: { elementType: 'number', elementId: '_jaTbPointSize', defaultValue: 12, min: 6, max: 20 },
+    // PHASE 4: Continuous Scanning Settings
+    continuousScanning: { elementType: 'checkbox', elementId: '_jaCbContinuousScanning', defaultValue: false, group: 'experimental' },
   };
 
   // ── Direction arrow character sets ────────────────────────────────────────
@@ -556,7 +574,7 @@
         // markers would duplicate the JB U-TURN marker.
         var bjCrossing = ja_segment_crosses_bj_boundary(segment, allBigJunctions);
         if (bjCrossing.crosses) {
-          ja_log('Skipping double turns for ' + segmentId + ' — crosses INTO JB boundary (JB far-turns take precedence)', 2);
+          ja_log('Skip double turns: ' + segmentId + ' crosses JB boundary', 3);
           return; // Skip double-turn collection for this entry-to-JB segment
         }
 
@@ -638,7 +656,7 @@
         // SUPPRESS LOCAL DOUBLE U-TURNS FOR ARM SEGMENTS CROSSING INTO JB
         var armBjCrossing = ja_segment_crosses_bj_boundary(armSeg, allBigJunctions);
         if (armBjCrossing.crosses) {
-          ja_log('Skipping arm double turns for ' + armId + ' — crosses INTO JB boundary (JB far-turns take precedence)', 2);
+          ja_log('Skip arm double turns: ' + armId + ' crosses JB boundary', 3);
           return;
         }
 
@@ -690,7 +708,7 @@
       });
     }
 
-    ja_log('Collected double-turn segments:', 2);
+    ja_log('Double-turns collected: ' + doubleTurns.data.length + ' total', 3);
     ja_log(doubleTurns.data, 4);
     return doubleTurns;
   }
@@ -745,7 +763,7 @@
         continue;
       }
 
-      ja_log('Calculating angles for ' + ja_current_node_segments.length + ' segments', 2);
+      ja_log('Calculating angles for ' + ja_current_node_segments.length + ' segments', 3);
       ja_log(ja_current_node_segments, 4);
 
       ja_current_node_segments.forEach(function (nodeSegment, j) {
@@ -763,7 +781,7 @@
           restart = true;
         }
         a = ja_getAngle(ja_nodes[i], s);
-        ja_log('Segment ' + nodeSegment + ' angle is ' + a, 3);
+        ja_log('Segment ' + nodeSegment + ' angle: ' + a, 4);
         angles[j] = [a, nodeSegment, s == null ? false : ja_is_segment_selected(nodeSegment)];
         if (s == null ? false : ja_is_segment_selected(nodeSegment)) {
           ja_selected_segments_count++;
@@ -775,12 +793,10 @@
       }
 
       //make sure we have the selected angles in correct order
-      ja_log(ja_current_node_segments, 3);
+      ja_log(ja_current_node_segments, 4);
       getselfeat().forEach(function (selectedSegment) {
         var selectedSegmentId = selectedSegment.id;
-        ja_log('Checking if ' + selectedSegmentId + ' is in current node', 3);
         if (ja_current_node_segments.indexOf(selectedSegmentId) >= 0) {
-          ja_log('It is!', 3);
           //find the angle
           for (var j = 0; j < angles.length; j++) {
             if (angles[j][1] === selectedSegmentId) {
@@ -788,12 +804,11 @@
               break;
             }
           }
-        } else {
-          ja_log("It's not..", 3);
+          ja_log('Selected segment ' + selectedSegmentId + ' found', 4);
         }
       });
 
-      ja_log(angles, 3);
+      ja_log(angles, 4);
 
       var ha, point;
       //if we have two connected segments selected, do some magic to get the turn angle only =)
@@ -810,7 +825,7 @@
 
         var ja_extra_space_multiplier = ja_compute_extra_space(a, ha);
 
-        ja_log('Angle between ' + ja_selected_angles[0][1] + ' and ' + ja_selected_angles[1][1] + ' is ' + a + ' and position for label should be at ' + ha, 3);
+        ja_log('Angle: ' + a + '° at ' + ha + '°', 4);
 
         //Guess some routing instructions based on segment types, angles etc
         var ja_junction_type = ja_routing_type.TURN; //Default to old behavior
@@ -818,8 +833,10 @@
         if (ja_getOption('guess')) {
           ja_log(ja_selected_angles, 4);
           ja_log(angles, 4);
-          ja_junction_type = ja_guess_routing_instruction(node, ja_selected_angles[0][1], ja_selected_angles[1][1], angles);
-          ja_log('Type is: ' + ja_junction_type, 2);
+          var s_in_seg = ja_selected_angles[0][1];
+          var s_out_seg = ja_selected_angles[1][1];
+          ja_junction_type = ja_guess_routing_instruction(node, s_in_seg, s_out_seg, angles);
+          ja_log('Guess result: ' + s_in_seg + ' → ' + s_out_seg + ' = ' + ja_junction_type, 2);
         }
         //get the initial marker point
         point = turf.destination(turf.point(node.geometry.coordinates), (ja_extra_space_multiplier * ja_ld) / 1000, ja_math_to_compass(ha)).geometry;
@@ -873,7 +890,9 @@
             }
             ja_log('Angle in:', 3);
             ja_log(a_in, 4);
-            ja_log(ja_guess_routing_instruction(node, a_in[1], angle[1], angles), 3);
+            var depMarkerType = ja_getOption('guess') ? ja_guess_routing_instruction(node, a_in[1], angle[1], angles) : ja_routing_type.TURN;
+            ja_log('Guess result: ' + a_in[1] + ' → ' + angle[1] + ' = ' + depMarkerType, 3);
+
             //FIXME: we might want to try to keep the marker on the segment, instead of just
             //in the direction of the first part
             ha = angle[0];
@@ -915,7 +934,7 @@
                         // Use larger distance (3.5x) to avoid overlapping with WME's turn restriction arrows at the boundary
                         var boundaryLd = ja_corrected_ld(ja_label_distance, markerAnchor.geometry.coordinates);
                         point = turf.destination(turf.point(markerAnchor.geometry.coordinates), (boundaryLd * 3.5) / 1000, ja_math_to_compass(ha)).geometry;
-                        ja_log('[JAI] Entry-to-JB crossing: moving marker to boundary (3.5x distance to avoid WME turn arrow overlap)', 2);
+                        ja_log('[JAI] Marker moved to JB boundary (3.5x distance)', 3);
                         break;
                       }
                     }
@@ -923,7 +942,6 @@
                 }
               }
             }
-
             ja_draw_marker(
               point,
               markerAnchor,
@@ -931,7 +949,7 @@
               a,
               ha,
               true,
-              ja_getOption('guess') ? ja_guess_routing_instruction(node, a_in[1], angle[1], angles) : ja_routing_type.TURN,
+              depMarkerType,
               false,
               isSquareMarker,
             );
@@ -999,6 +1017,23 @@
       if (ja_getOption('angleMode') === 'aDeparture' && !ja_selected_has_median && !ja_is_pure_node_selection) {
         ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids, allBigJunctions);
       }
+
+      // ── CACHE WRITE-BACK: Push fresh angles to continuous cache ────────────
+      // On-demand recalculation has finished for this node. Compute full angle set
+      // with routing types and write to ja_continuous_cache so that when you deselect,
+      // the continuous scanner renders current data (not stale pre-edit data).
+      //
+      // This completes the cache architecture: both on-demand and continuous modes
+      // share the same cache, and on-demand writes back fresh results on every
+      // recalculation (whether for selection changes or turn edits).
+      //
+      // Note: On-demand rendering calculates routing types only for selected pairs,
+      // but continuous rendering needs ALL pairs. So we call ja_calculate_angles_for_node()
+      // to generate the full set with complete routing type information.
+      if (ja_continuous_mode && ja_is_valid_routing_node(node)) {
+        var fullAngles = ja_calculate_angles_for_node(node);
+        ja_write_to_cache(node.id, fullAngles);
+      }
     }
 
     // Draw far-exit double-turn markers triggered by arm selection.
@@ -1017,7 +1052,7 @@
                                });
       var farExitDist = hasFarNodeConflict ? 3.2 : 2.0;
       if (hasFarNodeConflict) {
-        ja_log('[MARKER-OVERLAP] Far-exit double-turn conflict at node ' + item.farNodeId + ' bearing ' + item.exitBearing + ' — using 3.2x distance', 2);
+        ja_log('[MARKER-OVERLAP] Far-exit conflict at node ' + item.farNodeId + ': 3.2x distance', 3);
       }
 
       var pt = turf.destination(turf.point(farNode.geometry.coordinates), (farExitDist * farLd) / 1000, ja_math_to_compass(item.exitBearing)).geometry;
@@ -1025,6 +1060,431 @@
     });
 
     return false;
+  }
+
+  // ─── CACHE HELPERS: Reduce duplication in cache operations ────────────────
+  /**
+   * Store angle data in ja_continuous_cache for both on-demand and continuous modes.
+   * Single source of truth for cache writes; prevents duplication and ensures consistency.
+   * @param {number} nodeId - Node ID to cache
+   * @param {Array} angles - Angle objects array with routing type info
+   */
+  function ja_write_to_cache(nodeId, angles) {
+    ja_continuous_cache[nodeId] = {
+      timestamp: Date.now(),
+      angles: angles
+    };
+    ja_log('Cache write: node ' + nodeId + ' (' + angles.length + ' angles)', 4);
+  }
+
+  /**
+   * Check if cache entry is fresh (within 2-minute TTL).
+   * @param {Object} cached - Cache entry (should have timestamp field)
+   * @returns {boolean} true if entry exists and is < 2min old, false otherwise
+   */
+  function ja_is_cache_fresh(cached) {
+    if (!cached) return false;
+    return (Date.now() - cached.timestamp) < 2 * 60 * 1000;  // 2-min TTL
+  }
+
+  /**
+   * Filter angle array to PROBLEM type only.
+   * @param {Array} angles - Array of angle objects with type field
+   * @returns {Array} Subset containing only PROBLEM angles
+   */
+  function ja_filter_problem_angles(angles) {
+    return angles.filter(a => a.type === ja_routing_type.PROBLEM);
+  }
+
+  /**
+   * Check if node has enough segments for routing analysis (3+ segments).
+   * @param {Object} node - Node object with connectedSegmentIds array
+   * @returns {boolean} true if node has 3+ segments, false otherwise
+   */
+  function ja_is_valid_routing_node(node) {
+    return node && node.connectedSegmentIds && node.connectedSegmentIds.length >= 3;
+  }
+
+  // ─── PHASE 2: CONTINUOUS SCANNING - Batch Processing ─────────────────────
+  /**
+   * Process cache-miss nodes in batches to add new markers incrementally.
+   * Only processes nodes in ja_continuous_needs_batching list (pre-filtered by ja_start_continuous_scan).
+   * Calculates angles, caches them, and renders immediately (adds to existing layer, no clearing).
+   * Schedules next batch via setTimeout (50ms delay = non-blocking).
+   */
+  function ja_scan_nodes_batch_from_list(batchSize) {
+    if (!ja_continuous_mode) return;
+    if (ja_continuous_needs_batching.length === 0) return;
+
+    var batchStartTime = Date.now();
+    // Calculate batch end index from the miss list
+    var endIndex = Math.min(ja_continuous_batch_index + batchSize, ja_continuous_needs_batching.length);
+    ja_log('Processing cache misses: batch ' + Math.ceil(ja_continuous_batch_index / batchSize) + ', nodes ' + ja_continuous_batch_index + '-' + endIndex + ' of ' + ja_continuous_needs_batching.length, 2);
+
+    // Process this batch of cache misses
+    for (var i = ja_continuous_batch_index; i < endIndex; i++) {
+      var node = ja_continuous_needs_batching[i];
+      if (!ja_is_valid_routing_node(node)) continue;
+
+      // Recalculate angles for this cache miss
+      ja_log('Calculating angles for new node ' + node.id, 3);
+      var angles = ja_calculate_angles_for_node(node);
+
+      // Store in cache
+      ja_write_to_cache(node.id, angles);
+
+      // Render new markers immediately (incrementally add to layer)
+      var problemAngles = ja_filter_problem_angles(angles);
+      for (var j = 0; j < problemAngles.length; j++) {
+        var angle = problemAngles[j];
+        var markerKey = node.id + '_' + angle.s_in_id + '_' + angle.s_out_id + '_' + Math.round(angle.angle * 10);
+
+        if (!ja_continuous_rendered.has(markerKey)) {
+          var labelDistance = ja_compute_label_distance();
+          var pt = turf.destination(turf.point(node.geometry.coordinates), (labelDistance) / 1000, ja_math_to_compass(angle.bearing)).geometry;
+          ja_draw_marker(pt, node, labelDistance, angle.angle, angle.bearing, true, angle.type, false, false);
+          ja_continuous_rendered.add(markerKey);
+        }
+      }
+    }
+
+    var batchEndTime = Date.now();
+    ja_continuous_batch_index = endIndex;
+
+    // If more misses to process, schedule next batch
+    if (ja_continuous_batch_index < ja_continuous_needs_batching.length) {
+      setTimeout(() => ja_scan_nodes_batch_from_list(batchSize), BATCH_PROCESSING_DELAY);
+      ja_log('Batch processing took ' + (batchEndTime - batchStartTime) + 'ms. Next batch in ' + BATCH_PROCESSING_DELAY + 'ms...', 2);
+    } else {
+      var totalCacheSize = Object.keys(ja_continuous_cache).length;
+      var totalAnglePairs = 0;
+      for (var cId in ja_continuous_cache) {
+        if (ja_continuous_cache.hasOwnProperty(cId)) {
+          totalAnglePairs += ja_continuous_cache[cId].angles.length;
+        }
+      }
+      ja_log('All cache misses resolved. Cache: ' + totalCacheSize + ' nodes / ' + totalAnglePairs + ' angle pairs. Total batch time: ~' + (batchEndTime - batchStartTime) + 'ms', 2);
+      ja_continuous_batch_index = 0;
+      ja_continuous_needs_batching = [];
+    }
+  }
+
+  /**
+   * Process a batch of nodes incrementally (20 at a time) to avoid UI freeze.
+   * Checks cache first: if angle pair cached and fresh (2-min TTL), skips recalculation.
+   * Cache miss: calculates angles via ja_guess_routing_instruction() and caches result.
+   * Markers persist on layer until segment edits invalidate cache for that node.
+   * Schedules next batch via setTimeout (BATCH_PROCESSING_DELAY ms = non-blocking).
+   */
+  function ja_scan_nodes_batch(batchSize) {
+    if (!ja_continuous_mode) return;  // Bail if continuous mode disabled
+
+    var batchStartTime = Date.now();
+    var batchCacheHits = 0;
+    var batchCacheMisses = 0;
+
+    // Calculate batch end index
+    var endIndex = Math.min(ja_continuous_batch_index + batchSize, ja_nodes_all.length);
+    ja_log('Continuous scan batch: nodes ' + ja_continuous_batch_index + '-' + endIndex + ' of ' + ja_nodes_all.length, 2);
+
+    // Process this batch
+    for (var i = ja_continuous_batch_index; i < endIndex; i++) {
+      var node = ja_nodes_all[i];
+      if (!ja_is_valid_routing_node(node)) continue;  // Skip 2-way roads (no routing ambiguity)
+
+      // Check cache (2-min TTL)
+      var cached = ja_continuous_cache[node.id];
+      if (ja_is_cache_fresh(cached)) {
+        batchCacheHits++;
+        ja_log('Cache HIT: node ' + node.id, 4);
+        continue;  // Use cached, skip recalculation
+      }
+
+      // Cache miss or expired: recalculate angles using existing JAI logic
+      batchCacheMisses++;
+      ja_log('Cache MISS: node ' + node.id, 4);
+      var angles = ja_calculate_angles_for_node(node);
+
+      // Store in cache
+      ja_write_to_cache(node.id, angles);
+    }
+
+    var batchEndTime = Date.now();
+    ja_continuous_batch_index = endIndex;
+
+    // If more nodes to process, schedule next batch with BATCH_PROCESSING_DELAY (keeps editor responsive)
+    if (ja_continuous_batch_index < ja_nodes_all.length) {
+      setTimeout(() => ja_scan_nodes_batch(batchSize), BATCH_PROCESSING_DELAY);
+      ja_log('Batch took ' + (batchEndTime - batchStartTime) + 'ms (' + batchCacheHits + ' hits / ' + batchCacheMisses + ' misses). Next batch in ' + BATCH_PROCESSING_DELAY + 'ms...', 2);
+    } else {
+      var totalCacheSize = Object.keys(ja_continuous_cache).length;
+      var totalAnglePairs = 0;
+      for (var cId in ja_continuous_cache) {
+        if (ja_continuous_cache.hasOwnProperty(cId)) {
+          totalAnglePairs += ja_continuous_cache[cId].angles.length;
+        }
+      }
+      ja_log('Complete scan done: ' + totalCacheSize + ' nodes / ' + totalAnglePairs + ' angle pairs. Final batch: ' + (batchEndTime - batchStartTime) + 'ms (' + batchCacheHits + ' hits / ' + batchCacheMisses + ' misses). Rendering PROBLEM markers...', 2);
+      ja_render_continuous_problems();
+      ja_continuous_batch_index = 0;  // Reset for next scan
+    }
+  }
+
+  /**
+   * Calculate all angles for a single node using existing JAI logic.
+   * Returns array of angle objects with type (PROBLEM, TURN, KEEP, BC, U_TURN, etc.)
+   * Reuses ja_guess_routing_instruction() which detects gray zones correctly.
+   */
+  function ja_calculate_angles_for_node(node) {
+    var nodeSegmentIds = node.connectedSegmentIds;
+    if (nodeSegmentIds.length < 3) return [];  // Skip 2-way roads
+
+    // First pass: build complete angles array of [angle, segmentId] pairs
+    // This is what ja_guess_routing_instruction expects
+    var angles_raw = [];
+    for (var i = 0; i < nodeSegmentIds.length; i++) {
+      var seg_i = sdk.DataModel.Segments.getById({ segmentId: nodeSegmentIds[i] });
+      if (!seg_i) continue;
+
+      var bearing_i = ja_getAngle(node.id, seg_i);
+      if (bearing_i === null) continue;
+
+      angles_raw.push([bearing_i, nodeSegmentIds[i]]);
+    }
+
+    if (angles_raw.length < 3) return [];  // Need at least 3 segments for routing ambiguity
+
+    // Second pass: for each pair of segments, get routing type using ja_guess_routing_instruction
+    var angles_with_types = [];
+    for (var i = 0; i < angles_raw.length; i++) {
+      for (var j = i + 1; j < angles_raw.length; j++) {
+        var s_in_id = angles_raw[i][1];
+        var s_out_id = angles_raw[j][1];
+        var angle = ja_angle_diff(angles_raw[i][0], angles_raw[j][0], false);
+
+        // Get routing type using existing function (includes gray zone detection)
+        var routingType = ja_guess_routing_instruction(node, s_in_id, s_out_id, angles_raw);
+        ja_log('Angle pair: ' + s_in_id + ' → ' + s_out_id + ' = ' + routingType, 4);
+
+        // Compute midpoint bearing for marker placement (handles wrap-around at 0°/360°)
+        var b_in = angles_raw[i][0];
+        var b_out = angles_raw[j][0];
+        var bearing_diff = b_out - b_in;
+        if (bearing_diff > 180) bearing_diff -= 360;
+        if (bearing_diff < -180) bearing_diff += 360;
+        var bearing_mid = b_in + bearing_diff / 2;
+        if (bearing_mid < 0) bearing_mid += 360;
+        if (bearing_mid >= 360) bearing_mid -= 360;
+
+        angles_with_types.push({
+          angle: angle,
+          type: routingType,
+          s_in_id: s_in_id,
+          s_out_id: s_out_id,
+          bearing_in: angles_raw[i][0],
+          bearing_out: angles_raw[j][0],
+          bearing: bearing_mid  // Midpoint for marker positioning (corrected for wrap-around)
+        });
+      }
+    }
+
+    return angles_with_types;
+  }
+
+  /**
+   * Render only NEW PROBLEM angles from cache to the junction_angles layer.
+   * Skips if there's an active selection (on-demand markers take priority).
+   * Skips angles already rendered (tracked in ja_continuous_rendered Set).
+   * Markers persist on layer until segment edits invalidate their cache entry.
+   * Filters to PROBLEM type only (like BJAI's optimization).
+   * Reuses ja_draw_marker() for consistent styling.
+   */
+  function ja_render_continuous_problems() {
+    if (!ja_continuous_mode) return;
+
+    // Don't render continuous markers if user has a selection active (on-demand markers take priority)
+    if (hasSelection()) {
+      ja_log('Skipping continuous marker render (selection active)', 3);
+      return;
+    }
+
+    var problemCount = 0;
+    var nodeCount = 0;
+
+    // Iterate cache
+    for (var nodeId in ja_continuous_cache) {
+      if (!ja_continuous_cache.hasOwnProperty(nodeId)) continue;
+
+      var entry = ja_continuous_cache[nodeId];
+      var node = sdk.DataModel.Nodes.getById({ nodeId: parseInt(nodeId) });
+      if (!node) continue;
+
+      nodeCount++;
+
+      // Filter to PROBLEM angles only
+      var problemAngles = ja_filter_problem_angles(entry.angles);
+
+      for (var i = 0; i < problemAngles.length; i++) {
+        var angle = problemAngles[i];
+
+        // Create unique key for this angle: nodeId + segment pair + rounded angle
+        // Prevents duplicate markers if render is called multiple times
+        var markerKey = nodeId + '_' + angle.s_in_id + '_' + angle.s_out_id + '_' + Math.round(angle.angle * 10);
+
+        // Skip if already rendered
+        if (ja_continuous_rendered.has(markerKey)) {
+          ja_log('Skipping duplicate angle marker: ' + markerKey, 3);
+          continue;
+        }
+
+        var labelDistance = ja_compute_label_distance();
+
+        // Calculate marker position (midpoint bearing, offset from node)
+        var pt = turf.destination(turf.point(node.geometry.coordinates), (labelDistance) / 1000, ja_math_to_compass(angle.bearing)).geometry;
+
+        // Draw using existing JAI marker function (reuses styling)
+        ja_draw_marker(pt, node, labelDistance, angle.angle, angle.bearing, true, angle.type, false, false);
+
+        // Mark this angle as rendered
+        ja_continuous_rendered.add(markerKey);
+        problemCount++;
+      }
+    }
+
+    ja_log('Rendered ' + problemCount + ' PROBLEM markers from cache (' + nodeCount + ' nodes)', 2);
+  }
+
+  /**
+   * Start a continuous scan: Phase 1 render cached nodes instantly, Phase 2 batch new nodes.
+   *
+   * PHASE 1 (instant): Loop through viewport, render all cached nodes with CURRENT labelDistance.
+   *   - Cache contains all angle types (PROBLEM, TURN, KEEP, BC, U_TURN, etc.)
+   *   - Filter to PROBLEM only for continuous mode
+   *   - Recalculate marker position with new zoom's labelDistance (only position, not angles)
+   *   - Add to layer incrementally
+   *
+   * PHASE 2 (background): Batch process nodes NOT in cache
+   *   - Calculate all angle pairs, cache them
+   *   - Render PROBLEM only, add to layer as batches complete
+   *
+   * Called by pan/zoom/edit event handlers.
+   */
+  function ja_start_continuous_scan() {
+    if (!ja_continuous_mode) return;
+
+    // Skip if zoomed out below minimum level
+    if (sdk.Map.getZoomLevel() < MIN_ZOOM_LEVEL) {
+      ja_log('Zoom level ' + sdk.Map.getZoomLevel() + ' < ' + MIN_ZOOM_LEVEL + ', skipping continuous scan', 3);
+      return;
+    }
+
+    // Skip if user has selection active (on-demand is showing, don't interfere)
+    if (hasSelection()) {
+      ja_log('Selection active, skipping continuous scan', 3);
+      return;
+    }
+
+    // Clear layer, rendered Set, and feature tracking for fresh collision detection on zoom
+    // ja_current_features holds marker positions used by ja_draw_marker() for collision detection.
+    // If we don't clear it, collision detection will reference old positions from previous zoom level,
+    // causing markers to be nudged further away with each zoom cycle (accumulation drift).
+    sdk.Map.removeAllFeaturesFromLayer({ layerName: 'junction_angles' });
+    ja_continuous_rendered.clear();
+    ja_current_features = [];
+    ja_feature_counter = 0;
+    ja_log('Cleared layer and feature tracking for fresh marker positioning at new zoom level', 2);
+
+    // Snapshot current viewport nodes using modern SDK API
+    var scanStartTime = Date.now();
+    ja_nodes_all = sdk.DataModel.Nodes.getAll() || [];
+    ja_continuous_batch_index = 0;
+    ja_continuous_needs_batching = [];
+
+    // Count current cache state before scan
+    var preScanCacheSize = Object.keys(ja_continuous_cache).length;
+    var preScanAnglePairs = 0;
+    for (var cId in ja_continuous_cache) {
+      if (ja_continuous_cache.hasOwnProperty(cId)) {
+        preScanAnglePairs += ja_continuous_cache[cId].angles.length;
+      }
+    }
+
+    var validRouteNodes = 0;
+    for (var ni = 0; ni < ja_nodes_all.length; ni++) {
+      if (ja_is_valid_routing_node(ja_nodes_all[ni])) validRouteNodes++;
+    }
+
+    ja_log('SCAN START: ' + ja_nodes_all.length + ' nodes in viewport, ' + validRouteNodes + ' have 3+ segments. Pre-scan cache: ' + preScanCacheSize + ' nodes / ' + preScanAnglePairs + ' angle pairs', 2);
+
+    var cacheHits = 0;
+    var cacheMisses = 0;
+
+    // PHASE 1: Render cached nodes immediately (no calculation needed, just reposition with current labelDistance)
+    for (var i = 0; i < ja_nodes_all.length; i++) {
+      var node = ja_nodes_all[i];
+      if (!ja_is_valid_routing_node(node)) continue;
+
+      var cached = ja_continuous_cache[node.id];
+
+      // Cache hit (fresh): render immediately with current labelDistance, skip batching
+      if (ja_is_cache_fresh(cached)) {
+        cacheHits++;
+        var entry = cached;
+        // Render ALL PROBLEM angles from cache (filter continuous mode)
+        var problemAngles = ja_filter_problem_angles(entry.angles);
+        for (var j = 0; j < problemAngles.length; j++) {
+          var angle = problemAngles[j];
+          var markerKey = node.id + '_' + angle.s_in_id + '_' + angle.s_out_id + '_' + Math.round(angle.angle * 10);
+
+          var labelDistance = ja_compute_label_distance();  // Current zoom's distance
+          var pt = turf.destination(turf.point(node.geometry.coordinates), (labelDistance) / 1000, ja_math_to_compass(angle.bearing)).geometry;
+          ja_draw_marker(pt, node, labelDistance, angle.angle, angle.bearing, true, angle.type, false, false);
+          ja_continuous_rendered.add(markerKey);
+        }
+      } else {
+        // Cache miss (expired or new): queue for PHASE 2 batching
+        cacheMisses++;
+        ja_continuous_needs_batching.push(node);
+      }
+    }
+
+    var phase1EndTime = Date.now();
+    ja_log('PHASE 1 complete: ' + cacheHits + ' cache hits / ' + cacheMisses + ' misses (' + (phase1EndTime - scanStartTime) + 'ms). Queuing ' + ja_continuous_needs_batching.length + ' nodes for background batching...', 2);
+
+    // PHASE 2: Batch process cache misses (20-node batches: 6ms calc + 50ms delay = fast & responsive)
+    if (ja_continuous_needs_batching.length > 0) {
+      ja_scan_nodes_batch_from_list(20);
+    } else {
+      var finalCacheSize = Object.keys(ja_continuous_cache).length;
+      ja_log('SCAN COMPLETE: No cache misses, all nodes fresh. Final cache: ' + finalCacheSize + ' nodes. Total time: ' + (phase1EndTime - scanStartTime) + 'ms', 2);
+    }
+  }
+
+  /**
+   * Debounced continuous scan trigger: prevents redundant scans during rapid events.
+   * Cancels pending timeout if new event fires within 100ms, then reschedules.
+   * Called by zoom/pan/edit event handlers.
+   */
+  function ja_debounced_continuous_scan() {
+    if (!ja_continuous_mode) return;
+
+    // Skip if zoomed out below minimum level
+    if (sdk.Map.getZoomLevel() < MIN_ZOOM_LEVEL) {
+      ja_log('Zoom level ' + sdk.Map.getZoomLevel() + ' < ' + MIN_ZOOM_LEVEL + ', skipping debounced scan', 3);
+      return;
+    }
+
+    // Cancel any pending timeout
+    if (ja_continuous_scan_timer) {
+      clearTimeout(ja_continuous_scan_timer);
+      ja_log('Cancelled pending continuous scan', 3);
+    }
+
+    // Schedule new scan CONTINUOUS_SCAN_DEBOUNCE from now (allows batching of rapid events)
+    ja_continuous_scan_timer = setTimeout(() => {
+      ja_start_continuous_scan();
+      ja_continuous_scan_timer = null;
+    }, CONTINUOUS_SCAN_DEBOUNCE);
   }
 
   /**
@@ -1050,6 +1510,12 @@
     ja_current_features = [];
     ja_feature_counter = 0;
 
+    // If continuous scanning is active, mark all rendered markers as cleared (so they'll be re-rendered after on-demand markers)
+    if (ja_continuous_mode) {
+      ja_continuous_rendered.clear();
+      ja_log('Cleared rendered marker tracking for on-demand refresh', 3);
+    }
+
     // Clear marker position tracking maps so local/far-turn conflict detection starts fresh
     ja_local_markers_by_node = {};
     ja_far_turn_bearings_by_node = {};
@@ -1060,6 +1526,11 @@
     // Early exit if nothing is selected (after cleanup)
     var ja_selfeat = getselfeat();
     if (ja_selfeat.length === 0 || ja_selfeat.length > 2) {
+      // Nothing selected — re-render continuous markers if enabled and zoom is sufficient
+      if (ja_continuous_mode && sdk.Map.getZoomLevel() >= MIN_ZOOM_LEVEL) {
+        ja_log('No selection active. Re-rendering continuous markers (deselect/no-op call)...', 2);
+        ja_render_continuous_problems();
+      }
       return;
     }
 
@@ -1166,6 +1637,14 @@
     ja_last_restart = 0;
     var ja_end_time = Date.now();
     ja_log('Calculation took ' + String(ja_end_time - ja_start_time) + ' ms', 3);
+
+    // After on-demand rendering completes, only re-render continuous markers if NO selection active
+    // When user has something selected, on-demand markers take priority (continuous would clutter the view)
+    // When user deselects, continuous markers reappear to show background problems
+    if (ja_continuous_mode && !hasSelection()) {
+      ja_log('No selection active. Re-rendering continuous markers...', 2);
+      ja_render_continuous_problems();
+    }
   }
 
   /**
@@ -1197,9 +1676,11 @@
    * @param {number} s_in_id - Segment ID of the incoming road.
    * @param {number} s_out_id - Segment ID of the candidate exit.
    * @param {Array} angles - All bearing/segmentId/isSelected triples at this node.
-   * @returns {string} A ja_routing_type value string.
+   * @param {boolean} [logRestrictions=true] - If false, suppresses logging of turn blocks (used to reduce redundant logs during batch processing and far-turn evaluations).
+   * @returns {string} A ja_routing_type value string (e.g., 'junction_turn', 'junction_keep_left', 'junction_problem').
    */
-  function ja_guess_routing_instruction(node, s_in_a, s_out_a, angles) {
+  function ja_guess_routing_instruction(node, s_in_a, s_out_a, angles, logRestrictions) {
+    if (typeof logRestrictions === 'undefined') logRestrictions = true;  // Default: log turn blocks
     var s_n = {},
       s_in = null,
       s_out = {},
@@ -1208,8 +1689,6 @@
       angle;
     var s_in_id = s_in_a;
     var s_out_id = s_out_a;
-
-    ja_log('Guessing routing instructions from ' + s_in_a + ' via node ' + node.id + ' to ' + s_out_a, 2);
 
     s_in_a = angles.filter(function (element) {
       return element[1] === s_in_a;
@@ -1247,10 +1726,12 @@
     }
 
     angle = ja_angle_diff(s_in_a[0], s_out_a[0], false);
-    ja_log('turn angle is: ' + angle, 3);
+    ja_log('Angle: ' + angle.toFixed(1) + '°', 4);
 
     if (!ja_is_turn_allowed(s_in, node, s_out[s_out_id])) {
-      ja_log('Turn is disallowed!', 2);
+      if (logRestrictions) {
+        ja_log('Turn blocked: ' + s_in_id + ' → ' + s_out_id + ' via ' + node.id, 2);
+      }
       return ja_routing_type.NO_TURN;
     }
 
@@ -1272,32 +1753,32 @@
     //Roundabout - no true instruction guessing here!
     if (s_in.junctionId) {
       if (s_out[s_out_id].junctionId) {
-        ja_log('Roundabout continuation - no instruction', 2);
+        ja_log('Roundabout continuation (BC)', 3);
         return ja_routing_type.BC;
       } else {
-        ja_log('Roundabout exit', 2);
+        ja_log('Roundabout exit', 3);
         return ja_routing_type.ROUNDABOUT_EXIT;
       }
     } else if (s_out[s_out_id].junctionId) {
-      ja_log('Roundabout entry - no instruction', 2);
+      ja_log('Roundabout entry (BC)', 3);
       return ja_routing_type.BC;
     }
 
     if (Math.abs(angle) > U_TURN_ANGLE + GRAY_ZONE) {
-      ja_log('Angle is >= 170 - U-Turn', 2);
+      ja_log('U-TURN: ' + s_in_id + ' → ' + s_out_id + ' (' + angle.toFixed(1) + '°)', 2);
       return ja_routing_type.U_TURN;
     } else if (Math.abs(angle) > U_TURN_ANGLE - GRAY_ZONE) {
-      ja_log('Angle is in gray zone 169-171', 3);
+      ja_log('U-TURN gray zone: ' + s_in_id + ' → ' + s_out_id + ' (' + angle.toFixed(1) + '°)', 3);
       return ja_routing_type.PROBLEM;
     }
 
     if (node.connectedSegmentIds.length <= 2) {
-      ja_log('Only one possible turn - no instruction', 2);
+      ja_log('Only 2 segments at node ' + node.id + ': BC (no instruction)', 2);
       return ja_routing_type.BC;
     }
 
     if (Math.abs(angle) < TURN_ANGLE - GRAY_ZONE) {
-      ja_log('Turn is <= 44', 3);
+      ja_log('Angle < 44° (BC eval zone)', 4);
 
       angles = angles.filter(function (a) {
         if (s_out_id === a[1] || (typeof s_n[a[1]] !== 'undefined' && ja_is_turn_allowed(s_in, node, s_n[a[1]]) && Math.abs(ja_angle_diff(s_in_a, a[0], false)) < TURN_ANGLE)) {
@@ -1358,22 +1839,8 @@
         }
       }
 
-      // Check if we're in a gray zone with ambiguous BC
-      // BUT: don't flag PROBLEM if this will become an EXIT (routing is determined by road types)
-      var absAngle = Math.abs(angle);
-      var isExitCase = (ja_is_primary_road(s_in) && !ja_is_primary_road(s_out[s_out_id])) ||
-                       (ja_is_ramp(s_in) && !ja_is_primary_road(s_out[s_out_id]) && !ja_is_ramp(s_out[s_out_id]));
-
-      if (!isExitCase && (bc_count !== 1 || (bc_matches[s_out_id] === undefined && bc_prio > 0))) {
-        if ((absAngle >= TURN_ANGLE - GRAY_ZONE && absAngle <= TURN_ANGLE + GRAY_ZONE) ||
-            (absAngle >= AMBIGUOUS_KEEP_ANGLE - GRAY_ZONE && absAngle <= AMBIGUOUS_KEEP_ANGLE + GRAY_ZONE)) {
-          ja_log('Gray zone with failed BC matching (count=' + bc_count + '): PROBLEM', 2);
-          return ja_routing_type.PROBLEM;
-        }
-      }
-
       if (bc_matches[s_out_id] !== undefined && bc_count === 1) {
-        ja_log('"straight": no instruction', 2);
+        ja_log('BC found: ' + s_in_id + ' → ' + s_out_id + ' via ' + node.id + ' (straight)', 2);
         return ja_routing_type.BC;
       }
 
@@ -1384,13 +1851,13 @@
       if (!ja_is_left_hand_traffic) {
         //RHT
         if (angles[0][1] === s_out_id && !ja_overlapping_angles(angles[0][0], angles[1][0])) {
-          ja_log('Left most <45 segment: keep left', 2);
+          ja_log('BC → KEEP_LEFT (leftmost <45°)', 3);
           return ja_routing_type.KEEP_LEFT;
         }
       } else {
         //LHT
         if (angles[angles.length - 1][1] === s_out_id && !ja_overlapping_angles(angles[angles.length - 1][0], angles[angles.length - 2][0])) {
-          ja_log('Right most <45 segment: keep right', 2);
+          ja_log('BC → KEEP_RIGHT (rightmost <45°)', 3);
           return ja_routing_type.KEEP_RIGHT;
         }
       }
@@ -1404,15 +1871,18 @@
       }
 
       if (ja_is_primary_road(s_in) && !ja_is_primary_road(s_out[s_out_id])) {
-        ja_log('Primary to non-primary = exit', 2);
+        ja_log('Primary→non-primary = EXIT', 3);
         return ja_is_left_hand_traffic ? ja_routing_type.EXIT_LEFT : ja_routing_type.EXIT_RIGHT;
       }
       if (ja_is_ramp(s_in) && !ja_is_primary_road(s_out[s_out_id]) && !ja_is_ramp(s_out[s_out_id])) {
-        ja_log('Ramp to non-primary and non-ramp = exit', 2);
+        ja_log('Ramp→non-primary = EXIT', 3);
         return ja_is_left_hand_traffic ? ja_routing_type.EXIT_LEFT : ja_routing_type.EXIT_RIGHT;
       }
 
       return ja_is_left_hand_traffic ? ja_routing_type.KEEP_LEFT : ja_routing_type.KEEP_RIGHT;
+    } else if (Math.abs(angle) < TURN_ANGLE + GRAY_ZONE) {
+      ja_log('PROBLEM gray zone: ' + s_in_id + ' → ' + s_out_id + ' via ' + node.id + ' (' + angle.toFixed(1) + '°)', 2);
+      return ja_routing_type.PROBLEM;
     } else {
       // Use centralized angle classification for consistency
       return ja_classify_turn_angle(angle);
@@ -1859,15 +2329,13 @@
    * @returns {boolean} True if the turn is allowed for a typical passenger vehicle.
    */
   function ja_is_turn_allowed(s_from, via_node, s_to) {
-    ja_log('Allow from ' + s_from.id + ' to ' + s_to.id + ' via ' + via_node.id, 2);
-
     if (!sdk.DataModel.Turns.isTurnAllowedBySegmentDirections({ fromSegmentId: s_from.id, nodeId: via_node.id, toSegmentId: s_to.id })) {
-      ja_log('Driving direction restriction applies', 3);
+      ja_log('Turn ' + s_from.id + ' → ' + s_to.id + ' via ' + via_node.id + ': blocked (direction)', 3);
       return false;
     }
 
     var allowed = sdk.DataModel.Turns.isTurnAllowed({ fromSegmentId: s_from.id, nodeId: via_node.id, toSegmentId: s_to.id });
-    ja_log('Turn allowed: ' + allowed, 2);
+    ja_log('Turn ' + s_from.id + ' → ' + s_to.id + ' via ' + via_node.id + ': ' + (allowed ? 'allowed' : 'blocked'), 3);
     return allowed;
   }
 
@@ -2837,38 +3305,42 @@
   function ja_opcode_to_routing_type(opcode, logOpcode) {
     if (typeof logOpcode === 'undefined') logOpcode = true;
 
+    var result = null;
     switch (opcode) {
       case 'NONE':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideBC;
+        result = ja_routing_type.OverrideBC;
+        break;
       case 'CONTINUE':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideCONTINUE;
+        result = ja_routing_type.OverrideCONTINUE;
+        break;
       case 'TURN_LEFT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideTURN_LEFT;
+        result = ja_routing_type.OverrideTURN_LEFT;
+        break;
       case 'TURN_RIGHT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideTURN_RIGHT;
+        result = ja_routing_type.OverrideTURN_RIGHT;
+        break;
       case 'KEEP_LEFT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideKEEP_LEFT;
+        result = ja_routing_type.OverrideKEEP_LEFT;
+        break;
       case 'KEEP_RIGHT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideKEEP_RIGHT;
+        result = ja_routing_type.OverrideKEEP_RIGHT;
+        break;
       case 'EXIT_LEFT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideEXIT_LEFT;
+        result = ja_routing_type.OverrideEXIT_LEFT;
+        break;
       case 'EXIT_RIGHT':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideEXIT_RIGHT;
+        result = ja_routing_type.OverrideEXIT_RIGHT;
+        break;
       case 'UTURN':
-        if (logOpcode) ja_log('turn opcode override is: ' + opcode, 2);
-        return ja_routing_type.OverrideU_TURN;
-      default:
-        if (logOpcode) ja_log('no turn opcode override', 3);
-        return null;
+        result = ja_routing_type.OverrideU_TURN;
+        break;
     }
+
+    // Single log: opcode recognized or not
+    if (logOpcode) {
+      ja_log('Turn opcode override: ' + (result ? opcode : 'none'), 3);
+    }
+    return result;
   }
 
   /**
@@ -3159,7 +3631,7 @@
    *                                    uses the same KEEP/EXIT/TURN thresholds as regular turns.
    */
   function ja_draw_far_turn_markers(node, ja_label_distance, ja_selected_seg_ids, allBigJunctions) {
-    ja_log('[FAR-TURNS] ─── CALLED FOR NODE ' + node.id + ' ───', 3);
+    ja_log('[FAR-TURNS] Processing node ' + node.id + ' (' + node.connectedSegmentIds.length + ' segments)', 4);
 
     // WHY getTurnsFromSegment instead of getTurnsThroughNode:
     // getTurnsThroughNode only returns turns where BOTH the entry and exit segment connect
@@ -3175,8 +3647,6 @@
     var drawnIntermediateSteps = {}; // key: "nodeId_angleRounded", prevents duplicate intermediate-step markers when multiple paths share the same median segment
 
     node.connectedSegmentIds.forEach(function (segId) {
-      ja_log('[FAR-TURNS]   Processing segId ' + segId + ' from node ' + node.id, 3);
-
       // Only draw far turns FROM the user-selected entry segment(s).
       //
       // When a segment is selected, regular departure-mode markers show angles FROM that
@@ -3192,13 +3662,13 @@
       // filter and show far turns from all connected non-median segments, since there is no
       // single "incoming" segment to anchor the perspective.
       if (ja_selected_seg_ids.length > 0 && ja_selected_seg_ids.indexOf(segId) === -1) {
-        ja_log('[FAR-TURNS] Skipping segId ' + segId + ' — not a selected segment', 3);
+        ja_log('Skip segment ' + segId + ' (not selected)', 4);
         return;
       }
 
       // Skip segments that are contained within a BigJunction (median/intermediate segments).
       if (sdk.DataModel.Segments.isContainedInBigJunction({ segmentId: segId })) {
-        ja_log('[FAR-TURNS] Skipping segId ' + segId + ' — isContainedInBigJunction (median segment)', 3);
+        ja_log('Skip segment ' + segId + ' (median)', 4);
         return;
       }
 
@@ -3241,11 +3711,9 @@
 
             // Only query getAllPossibleTurns when we're at the correct entry node
             if (isJBSegment && entryNodeForTurns === node.id) {
-              ja_log('[FAR-TURNS] segId ' + segId + ' has 0 JB far turns via getTurnsFromSegment() — trying getAllPossibleTurns()...', 1);
-
               try {
                 var allTurns = sdk.DataModel.BigJunctions.getAllPossibleTurns({ bigJunctionId: bj.id });
-                ja_log('[FAR-TURNS] getAllPossibleTurns(' + bj.id + ') returned ' + allTurns.length + ' total turns', 2);
+                ja_log('[FAR-TURNS] Fallback getAllPossibleTurns: ' + allTurns.length + ' turns found', 3);
 
                 // Filter for turns from this entry segment that have intermediate segments (far turns through JB)
                 // CRITICAL: getAllPossibleTurns() returns ALL path combinations through a JB, including
@@ -3612,7 +4080,7 @@
             // including entry→firstMedianSegment. Drawing it again here as the first breadcrumb
             // would create a duplicate marker.
             if (stepIndex === 0) {
-              ja_log('[FAR-TURNS] Skipping step 0 — already drawn by ja_draw_node_markers()', 3);
+              ja_log('[FAR-TURNS] Skip step 0 (already drawn by ja_draw_node_markers)', 4);
               continue;
             }
 
@@ -3621,7 +4089,7 @@
             // We only need to show the marker once.
             var stepKey = stepConnectingNodeId + '_' + ja_round(Math.abs(stepAngle));
             if (drawnIntermediateSteps[stepKey]) {
-              ja_log('[FAR-TURNS] Skipping step ' + stepIndex + ' — already drawn at node ' + stepConnectingNodeId + ' with angle ' + ja_round(Math.abs(stepAngle)) + '°', 3);
+              ja_log('[FAR-TURNS] Skip step ' + stepIndex + ' (already drawn)', 4);
               continue;
             }
             drawnIntermediateSteps[stepKey] = true;
@@ -3646,7 +4114,8 @@
               }
             });
             // Apply full routing instruction logic, matching regular departure-mode turns
-            stepMarkerType = ja_getOption('guess') ? ja_guess_routing_instruction(stepConnectingNode, stepFrom.id, stepTo.id, stepAngles) : ja_routing_type.TURN;
+            // Pass false to suppress "Turn blocked" logs since they're redundant with on-demand evaluation
+            stepMarkerType = ja_getOption('guess') ? ja_guess_routing_instruction(stepConnectingNode, stepFrom.id, stepTo.id, stepAngles, false) : ja_routing_type.TURN;
           }
 
           // If path is restricted (JB turn level or intermediate node), override to NO_TURN (gray marker)
@@ -3710,13 +4179,13 @@
             // At JB boundary: use larger distance to avoid overlapping with WME turn restriction arrows
             stepDistanceMultiplier = 2.5;
             if (hasLocalConflict) {
-              ja_log('[MARKER-OVERLAP] Far-turn at JB boundary + local conflict at node ' + stepConnectingNodeId + ' — using 2.5x boundary distance (takes precedence)', 2);
+              ja_log('[MARKER-OVERLAP] Far-turn + local conflict at node ' + stepConnectingNodeId + ': 2.5x distance', 3);
             } else {
-              ja_log('[MARKER-OVERLAP] Far-turn at JB boundary for node ' + stepConnectingNodeId + ' — using 2.5x boundary distance', 2);
+              ja_log('[MARKER-OVERLAP] Far-turn at JB boundary: 2.5x distance', 3);
             }
           } else if (hasLocalConflict) {
             stepDistanceMultiplier = 1.5;
-            ja_log('[MARKER-OVERLAP] Far-turn conflict at node ' + stepConnectingNodeId + ' bearing ' + stepExitBearing + ' — using 1.5x distance', 2);
+            ja_log('[MARKER-OVERLAP] Far-turn conflict: 1.5x distance', 3);
           }
 
           // Calculate marker position
@@ -3727,12 +4196,13 @@
 
           // For U-TURN paths on final step, use accumulated total angle instead of local step angle
           var angleToDisplay = stepAngle;
+          var angleLogDetail = '';
           if (isUTurnPath && isFinalStep) {
             angleToDisplay = uTurnAccumulatedAngle;
-            ja_log('[FAR-TURNS] U-TURN final step: using accumulated angle ' + uTurnAccumulatedAngle.toFixed(2) + '° instead of local angle ' + stepAngle.toFixed(2) + '°', 2);
+            angleLogDetail = ' (U-TURN: ' + uTurnAccumulatedAngle.toFixed(1) + '° accumulated)';
           }
 
-          ja_log('[FAR-TURNS] Drawing step ' + stepIndex + ' (final=' + isFinalStep + ', angle=' + angleToDisplay.toFixed(2) + '°, type=' + stepMarkerType + ')', 2);
+          ja_log('[FAR-TURNS] Step ' + stepIndex + ': angle=' + angleToDisplay.toFixed(1) + '° type=' + stepMarkerType + angleLogDetail, 2);
 
           // Draw the marker (isFarTurn=true, isSquareMarker=stepIsSquareMarker)
           ja_draw_marker(stepPoint, stepMarkerAnchor, stepJaLd, angleToDisplay, stepExitBearing, true, stepMarkerType, true, stepIsSquareMarker);
@@ -3946,6 +4416,35 @@
           }
         });
         break;
+      // PHASE 4: Continuous Scanning toggle handler
+      case ja_settings.continuousScanning.elementId:
+        ja_log('Continuous scanning toggle: ' + e.checked, 2);
+        ja_continuous_enabled = e.checked;
+
+        if (e.checked) {
+          // Enable: only start if layer is visible; otherwise just set flag and wait for layer to be shown
+          if (ja_layer_visible) {
+            ja_continuous_mode = true;
+            ja_start_continuous_scan();
+            ja_log('Continuous scanning enabled. Markers persist until segment edits.', 2);
+          } else {
+            ja_continuous_mode = false;
+            ja_log('Continuous scanning enabled (setting saved) but layer is hidden. Will activate when layer is shown.', 2);
+          }
+        } else {
+          // Disable: stop scanning, clear timer and state (markers stay on layer)
+          ja_continuous_mode = false;
+          if (ja_continuous_scan_timer) {
+            clearTimeout(ja_continuous_scan_timer);
+            ja_continuous_scan_timer = null;
+          }
+          // Note: we DON'T clear cache or rendered markers when disabled.
+          // They persist and won't update until user re-enables scanning.
+          // This allows user to review markers without continuous background scanning.
+          ja_continuous_batch_index = 0;
+          ja_log('Continuous scanning disabled. Markers remain visible; scanning paused.', 2);
+        }
+        break;
       default:
         ja_log('Nothing to do for ' + e.id, 3);
     }
@@ -4090,6 +4589,20 @@
     // Style driven by ja_build_style_context() closures — recalculate refreshes colors.
     ja_calculate_real();
     ja_log(ja_options, 4);
+
+    // PHASE 4: Initialize Continuous Scanning if enabled AND layer is visible
+    ja_continuous_enabled = ja_getOption('continuousScanning') || false;
+    if (ja_continuous_enabled && ja_layer_visible) {
+      ja_continuous_mode = true;
+      ja_log('Continuous scanning enabled on startup', 2);
+      // Start the first scan after a brief delay to ensure map is ready
+      setTimeout(() => ja_start_continuous_scan(), 500);
+    } else {
+      ja_continuous_mode = false;
+      if (!ja_layer_visible) {
+        ja_log('Layer is hidden, continuous scanning suppressed', 2);
+      }
+    }
   };
 
   /**
@@ -4446,10 +4959,12 @@
           wazeDoubleUTurnRestriction: 'Disable for <15m and ±5° parallel',
           enableFarTurnJB: 'Enable JAI for Junction Boxes',
           enableFarTurnPath: 'Enable JAI for Paths',
+          continuousScanning: 'Scan for Angles to Avoid',
           decimals: 'Number of decimals',
           pointSize: 'Base point size',
           settingsguide: 'Settings & User Guide',
           roundaboutnav: 'WIKI: Roundabouts',
+          wazeAlgorithm: 'Waze Turn/Keep/Exit Algorithm',
           ghissues: 'JAI issue tracker',
         });
         break;
@@ -4490,10 +5005,12 @@
           wazeDoubleUTurnRestriction: 'Zakázat pro <15m a ±5° paralelně',
           enableFarTurnJB: 'Povolit JAI pro silniční křižovatky',
           enableFarTurnPath: 'Povolit JAI pro cesty',
+          continuousScanning: 'Skenování úhlů k vyhnutí',
           decimals: 'Počet des. míst',
           pointSize: 'Velikost písma',
           settingsguide: 'Nastavení a Uživatelská příručka',
           roundaboutnav: 'US WIKI: Kruhové objezdy',
+          wazeAlgorithm: 'Algoritmus Waze Turn/Keep/Exit',
           ghissues: 'Hlášení problémů JAI',
         });
         break;
@@ -4534,8 +5051,10 @@
           wazeDoubleUTurnRestriction: 'Poista käytöstä <15m ja ±5° rinnakkaisille',
           enableFarTurnJB: 'Ota JAI käyttöön risteyksissä',
           enableFarTurnPath: 'Ota JAI käyttöön poluilla',
+          continuousScanning: 'Skannaa välttämisen kulmia',
           decimals: 'Desimaalien määrä',
           pointSize: 'Ympyrän peruskoko',
+          wazeAlgorithm: 'Waze Turn/Keep/Exit Algoritmi',
         });
         break;
 
@@ -4574,8 +5093,10 @@
           wazeDoubleUTurnRestriction: 'Wyłącz dla <15m i ±5° równoległy',
           enableFarTurnJB: 'Włącz JAI dla skrzyżowań',
           enableFarTurnPath: 'Włącz JAI dla ścieżek',
+          continuousScanning: 'Skanuj kąty do uniknięcia',
           decimals: 'Ilość cyfr po przecinku',
           pointSize: 'Rozmiar punktów pomiaru',
+          wazeAlgorithm: 'Algorytm Waze Turn/Keep/Exit',
         });
         break;
 
@@ -4615,10 +5136,12 @@
           wazeDoubleUTurnRestriction: 'Отключить для <16м и ±5° параллель',
           enableFarTurnJB: 'Включить JAI для перекрёстков',
           enableFarTurnPath: 'Включить JAI для путей',
+          continuousScanning: 'Сканировать углы для избежания',
           decimals: '- знаков после запятой',
           pointSize: '- размер кружка',
           settingsguide: 'Настройки и руководство пользователя',
           roundaboutnav: 'Вики: круговые перекрестки',
+          wazeAlgorithm: 'Алгоритм Waze Turn/Keep/Exit',
           ghissues: 'Сообщить об ошибке',
         });
         break;
@@ -4659,8 +5182,10 @@
           wazeDoubleUTurnRestriction: 'Inaktivera för <15m och ±5° parallell',
           enableFarTurnJB: 'Aktivera JAI för korsningar',
           enableFarTurnPath: 'Aktivera JAI för vägar',
+          continuousScanning: 'Skanna vinklar att undvika',
           decimals: 'Decimaler',
           pointSize: 'Cirkelns basstorlek',
+          wazeAlgorithm: 'Waze Turn/Keep/Exit Algoritm',
         });
         break;
 
@@ -4699,8 +5224,10 @@
           wazeDoubleUTurnRestriction: 'Désactiver pour <15m et ±5° parallèle',
           enableFarTurnJB: 'Activer JAI pour les carrefours',
           enableFarTurnPath: 'Activer JAI pour les chemins',
+          continuousScanning: 'Analyser les angles à éviter',
           decimals: 'Nombre de decimales',
           pointSize: 'Taille des bulles',
+          wazeAlgorithm: 'Algorithme Waze Turn/Keep/Exit',
           resetToDefault: 'Réinitialiser par défaut',
           settingsguide: 'Paramètres et Guide utilisateur',
           roundaboutnav: 'WIKI: Rond-point (en)',
@@ -4743,8 +5270,10 @@
           wazeDoubleUTurnRestriction: 'Desactivar para <15m y ±5° paralelo',
           enableFarTurnJB: 'Habilitar JAI para intersecciones',
           enableFarTurnPath: 'Habilitar JAI para caminos',
+          continuousScanning: 'Escanear ángulos para evitar',
           decimals: 'Decimales',
           pointSize: 'Tamaño del texto',
+          wazeAlgorithm: 'Algoritmo Waze Turn/Keep/Exit',
           settingsguide: 'Configuración y Guía del usuario',
           roundaboutnav: 'WIKI: Rotondas',
           ghissues: 'Seguimiento de problemas',
@@ -4786,8 +5315,10 @@
           wazeDoubleUTurnRestriction: 'Вимкнути для <15м і ±5° паралельно',
           enableFarTurnJB: 'Увімкнути JAI для перехресть',
           enableFarTurnPath: 'Увімкнути JAI для шляхів',
+          continuousScanning: 'Сканування кутів для уникнення',
           decimals: '- знаків після коми',
           pointSize: '- розмір шрифту',
+          wazeAlgorithm: 'Алгоритм Waze Turn/Keep/Exit',
           settingsguide: 'Налаштування та посібник користувача',
           roundaboutnav: 'WIKI: кругові перехрестя(en)',
           ghissues: 'JAI - Повідомити про помилку',
@@ -5090,6 +5621,7 @@
     var experimentalCard = makeCard('fa-flask', 'Experimental');
     experimentalCard.body.appendChild(makeRow(ja_getMessage('enableFarTurnJB'), makeToggle('enableFarTurnJB')));
     experimentalCard.body.appendChild(makeRow(ja_getMessage('enableFarTurnPath'), makeToggle('enableFarTurnPath')));
+    experimentalCard.body.appendChild(makeRow(ja_getMessage('continuousScanning'), makeToggle('continuousScanning')));
     jaTabPane.appendChild(experimentalCard.card);
 
     // ── Footer: reset button + info links ──────────────────────────────
@@ -5107,6 +5639,7 @@
     infoList.className = 'list-unstyled';
     infoList.appendChild(ja_helpLink('https://github.com/WazeDev/WME-JAI/blob/development/USER-SETTINGS.md', 'settingsguide'));
     infoList.appendChild(ja_helpLink('https://www.waze.com/discuss/t/roundabout/377970', 'roundaboutnav'));
+    infoList.appendChild(ja_helpLink('https://www.waze.com/discuss/t/how-waze-determines-turn-keep-exit-maneuvers/378038', 'wazeAlgorithm'));
     infoList.appendChild(ja_helpLink('https://www.waze.com/discuss/t/script-wme-junction-angle-info/52238', 'ghissues'));
     footer.appendChild(infoList);
 
@@ -5208,12 +5741,92 @@
     sdk.Events.on({
       eventName: 'wme-map-move-end',
       eventHandler: function () {
-        // Guards: only run if roundabout overlay is set to "Always" and something is selected
-        if (ja_options.roundaboutOverlayDisplay !== 'rOverAlways' || !hasSelection()) {
-          return;
+        // On-demand roundabout overlay: only update if setting is "Always" and something is selected
+        if (ja_options.roundaboutOverlayDisplay === 'rOverAlways' && hasSelection()) {
+          if (sdk.Map.getZoomLevel() >= MIN_ZOOM_LEVEL) {
+            ja_calculate();
+          }
         }
-        if (sdk.Map.getZoomLevel() >= MIN_ZOOM_LEVEL) {
-          ja_calculate();
+
+        // Continuous scanning: trigger on every pan (if enabled, regardless of selection)
+        if (ja_continuous_mode) {
+          ja_debounced_continuous_scan();
+        }
+      },
+    });
+
+    // PHASE 3: Continuous Scanning Event Handlers ────────────────────
+    // Wire up zoom and move events to trigger debounced continuous scans
+    sdk.Events.on({
+      eventName: 'wme-map-zoom-changed',
+      eventHandler: function () {
+        if (ja_continuous_mode) {
+          ja_debounced_continuous_scan();
+        }
+      },
+    });
+
+    // Track segment/node/turn edits and clear relevant cache entries
+    sdk.Events.on({
+      eventName: 'wme-data-model-objects-changed',
+      eventHandler: function (payload) {
+        ja_log('*** CONTINUOUS CACHE HANDLER: dataModelName=' + payload.dataModelName + ', ja_continuous_mode=' + ja_continuous_mode + ', hasObjects=' + (payload.objects ? payload.objects.length : 0) + ', payload keys=' + Object.keys(payload).join(','), 2);
+
+        if (ja_continuous_mode && (payload.dataModelName === 'segments' || payload.dataModelName === 'nodes' || payload.dataModelName === 'turns')) {
+          var nodeIds = [];
+
+          // Collect node IDs from affected segments
+          if (payload.dataModelName === 'segments' && payload.objects && payload.objects.length > 0) {
+            for (var i = 0; i < payload.objects.length; i++) {
+              var seg = payload.objects[i];
+              if (seg.fromNodeId) nodeIds.push(seg.fromNodeId);
+              if (seg.toNodeId) nodeIds.push(seg.toNodeId);
+            }
+            ja_log('Cache invalidation: clearing ' + nodeIds.length + ' nodes affected by ' + payload.objects.length + ' segment edits', 2);
+          }
+
+          // Collect node IDs from affected turns
+          if (payload.dataModelName === 'turns' && payload.objects && payload.objects.length > 0) {
+            for (var i = 0; i < payload.objects.length; i++) {
+              var turn = payload.objects[i];
+              // Turn has nodeId property (the junction node)
+              if (turn.nodeId) nodeIds.push(turn.nodeId);
+            }
+            ja_log('Cache invalidation: clearing ' + nodeIds.length + ' nodes affected by ' + payload.objects.length + ' turn edits', 2);
+          }
+
+          // Collect node IDs from affected nodes (geometry changes)
+          if (payload.dataModelName === 'nodes' && payload.objects && payload.objects.length > 0) {
+            for (var i = 0; i < payload.objects.length; i++) {
+              var node = payload.objects[i];
+              if (node.id) nodeIds.push(node.id);
+            }
+            ja_log('Cache invalidation: clearing ' + nodeIds.length + ' nodes directly affected by ' + payload.objects.length + ' node geometry edits', 2);
+          }
+
+          // Clear cache and rendered entries for all affected nodes
+          for (var j = 0; j < nodeIds.length; j++) {
+            var nId = nodeIds[j];
+            delete ja_continuous_cache[nId];
+            ja_log('Cleared cache for node ' + nId, 3);
+
+            // Remove all rendered markers for this node (they'll be recalculated)
+            var keysToDelete = [];
+            ja_continuous_rendered.forEach(function (key) {
+              if (key.startsWith(nId + '_')) {
+                keysToDelete.push(key);
+              }
+            });
+            keysToDelete.forEach(function (key) {
+              ja_continuous_rendered.delete(key);
+              ja_log('Invalidated rendered marker: ' + key, 3);
+            });
+          }
+
+          if (nodeIds.length > 0) {
+            ja_log('Cache cleared for ' + nodeIds.length + ' affected nodes, triggering debounced scan', 2);
+            ja_debounced_continuous_scan();
+          }
         }
       },
     });
@@ -5273,6 +5886,26 @@
      */
     function ja_setLayerEnabled(enabled) {
       ja_layer_visible = enabled;
+
+      // When layer is disabled, also stop continuous scanning (no point scanning if layer is hidden)
+      if (!enabled) {
+        if (ja_continuous_mode) {
+          ja_continuous_mode = false;
+          if (ja_continuous_scan_timer) {
+            clearTimeout(ja_continuous_scan_timer);
+            ja_continuous_scan_timer = null;
+          }
+          ja_log('Layer disabled. Stopping continuous scanning.', 2);
+        }
+      } else {
+        // When layer is re-enabled, restart continuous scanning if the setting is on
+        if (ja_continuous_enabled && !ja_continuous_mode) {
+          ja_continuous_mode = true;
+          ja_log('Layer enabled. Resuming continuous scanning.', 2);
+          ja_start_continuous_scan();
+        }
+      }
+
       // Persist layer visibility state to localStorage
       if (localStorage) {
         localStorage.setItem('wme_ja_layer_visible', ja_layer_visible ? 'true' : 'false');
