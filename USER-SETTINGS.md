@@ -129,7 +129,7 @@ Gray zones are angle ranges near decision boundaries where routing instruction c
 
 **Clear BC winner:** If the BC algorithm finds a clear single candidate segment with the best name/type match (bc_count === 1), no PROBLEM flag is shown — routing is determined.
 
-**Under 44°:** Angles below 44° are classified as KEEP based on positional logic (leftmost/rightmost), regardless of BC state. No gray zone flagging.
+**Under 44°:** Angles below 44° are classified as KEEP (KEEP_LEFT or KEEP_RIGHT) based on positional logic (leftmost/rightmost exit), regardless of BC state. No gray zone flagging applies in this range.
 
 ### How to see it
 
@@ -480,7 +480,7 @@ These colors are used to display markers for each routing instruction type. They
 | **U-Turn**                    | U-Turn instruction color      | Purple (`#b66cff`)       | Reversal near 180°; classified as U-turn by Waze |
 | **No Turn (Blocked)**         | No Turn color                 | Gray (`#a0a0a0`)         | Turn restriction is active; this turn is disallowed |
 | **No Instruction**            | No Instruction color          | White (`#ffffff`)        | Junction nodes with only 2 segments (no choice of exits; Waze gives no instruction) |
-| **PROBLEM (Gray zone)**       | Angle to avoid color          | Yellow (`#feed40`)       | Angles in gray zones (44–47°, 166–170°, or 22–30°) where Best Continuation matching is ambiguous and the routing instruction is unpredictable |
+| **PROBLEM (Gray zone)**       | Angle to avoid color          | Yellow (`#feed40`)       | Angles in gray zones (44–47° and 166–170°) where Best Continuation matching is ambiguous and the routing instruction is unpredictable |
 
 To customize a color, click its color picker in the JAI settings sidebar.
 

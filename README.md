@@ -86,7 +86,7 @@ credited based on codebase history, commit logs, and community records:
 | —                | Sapozhnik     | 2019      | Ukrainian translation                                                     |
 | —                | ccclxv        | —         | British English (UK) translation                                          |
 | —                | g1220k        | —         | Contributions                                                             |
-| —                | JS55CT        | 2025+     | Current maintainer; SDK migration                                         |
+| —                | JS55CT        | 2025+     | Current maintainer; SDK migration, RA, JB, PATH and Scanning                                |
 
 > If you contributed and are not listed, or if any information above is incorrect, please open an
 > issue or pull request.
@@ -117,7 +117,7 @@ Source code and issue tracker: [https://github.com/WazeDev/WME-JAI](https://gith
 
 ## Changelog
 
-### 3.0.X _(current)_
+### 3.X.X _(current)_
 
 - Rewritten from the ground up for the WME JavaScript SDK (replaces legacy W/OpenLayers API)
 - New: double U-turn detection at H and # intersections — flags ~180° paths across short connector segments (≤30 m, or ≤50 m with incoming lane guidance)
@@ -125,6 +125,8 @@ Source code and issue tracker: [https://github.com/WazeDev/WME-JAI](https://gith
 - Roundabout center now shows a Ø diameter marker (white = radius ≤ 25 m / orange = oversized) to flag the radius Non-Normal criterion at a glance
 - ±N° deviation markers now appear at every oblique exit regardless of roundabout size
 - Departure-mode and ±N° markers are now zoom-aware and no longer overlap
+- support for RoundAbouts, JB and Paths
+- Added Continuous scanning for problem angles
 
 ### 2.2.16 _(Feb 6, 2025)_
 

@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.2.0
+// @version       3.2.1
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -57,6 +57,8 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
+    'Version 3.2.1',
+    'Small bug fix',
     'Version 3.2.0',
     'Experimenmtal: "Scan for Angles to Avoid" feature: background detection of PROBLEM angles replaces the need for the BJAI script!',
     'Version 3.1.5',
@@ -74,7 +76,7 @@
 
   // ── Debug & execution state ───────────────────────────────────────────────
   // Runtime flags and counters used across the module.
-  var junctionangle_debug = 1; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
+  var junctionangle_debug = 3; // 0=off, 1=errors+warnings, 2=key decisions (function outcomes), 3=per-segment detail, 4=object dumps+internals — lower to 1 before release
   var ja_last_restart = 0; // epoch ms timestamp — throttles auto-restart on stale data errors
   var sdk; // WME SDK instance, assigned by bootstrap()
 
@@ -1254,10 +1256,12 @@
 
     if (angles_raw.length < 3) return [];  // Need at least 3 segments for routing ambiguity
 
-    // Second pass: for each pair of segments, get routing type using ja_guess_routing_instruction
+    // Second pass: for each pair of segments in both directions, get routing type using ja_guess_routing_instruction
+    // Evaluate all ordered pairs (A→B and B→A) to catch PROBLEM angles regardless of segment order
     var angles_with_types = [];
     for (var i = 0; i < angles_raw.length; i++) {
-      for (var j = i + 1; j < angles_raw.length; j++) {
+      for (var j = 0; j < angles_raw.length; j++) {
+        if (i === j) continue;  // Skip same segment
         var s_in_id = angles_raw[i][1];
         var s_out_id = angles_raw[j][1];
         var angle = ja_angle_diff(angles_raw[i][0], angles_raw[j][0], false);
@@ -5097,6 +5101,52 @@
           decimals: 'Ilość cyfr po przecinku',
           pointSize: 'Rozmiar punktów pomiaru',
           wazeAlgorithm: 'Algorytm Waze Turn/Keep/Exit',
+        });
+        break;
+
+      //Portuguese (português)
+      case 'pt':
+        set_trans({
+          name: 'Informações de Ângulos de Junção',
+          settingsTitle: 'Definições de Informações de Ângulos de Junção',
+          resetToDefault: 'Repor predefinições',
+          aAbsolute: 'Absoluto',
+          aDeparture: 'Partida',
+          angleMode: 'Modo de ângulo',
+          angleDisplay: 'Estilo de visualização de ângulos',
+          angleDisplayArrows: 'Setas de direção',
+          displayFancy: 'Elegante',
+          displaySimple: 'Simples',
+          override: 'Verificar "instrução de substituição"',
+          overrideAngles: 'Mostrar ângulos de "instrução de substituição"',
+          guess: 'Estimar instruções de encaminhamento',
+          noInstructionColor: 'Melhor continuação',
+          continueInstructionColor: 'Continuar reto',
+          keepInstructionColor: 'Manter',
+          exitInstructionColor: 'Sair',
+          turnInstructionColor: 'Virar',
+          uTurnInstructionColor: 'Inversão de marcha',
+          noTurnColor: 'Viragem desautorizada',
+          problemColor: 'Ângulo a evitar',
+          roundaboutColor: 'Saída não-normal',
+          roundaboutOverlayColor: 'Sobreposição',
+          roundaboutOverlayDisplay: 'Mostrar rotunda',
+          rOverNever: 'Nunca',
+          rOverSelected: 'Quando selecionado',
+          rOverAlways: 'Sempre',
+          uTurnIncludeStreet: 'Incluir ruas',
+          uTurnIncludeParkingLot: 'Incluir estacionamentos',
+          uTurnIncludePrivateRoad: 'Incluir estradas privadas',
+          wazeDoubleUTurnRestriction: 'Desativar para <15m e ±5° paralelo',
+          enableFarTurnJB: 'Ativar JAI para caixas de junção',
+          enableFarTurnPath: 'Ativar JAI para caminhos',
+          continuousScanning: 'Procurar ângulos para evitar',
+          decimals: 'Número de casas decimais',
+          pointSize: 'Tamanho base do ponto',
+          settingsguide: 'Definições e guia do utilizador',
+          roundaboutnav: 'WIKI: Rotundas',
+          wazeAlgorithm: 'Algoritmo Waze Turn/Keep/Exit',
+          ghissues: 'Rastreador de problemas JAI',
         });
         break;
 
