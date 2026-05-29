@@ -5,7 +5,7 @@
 // @match         *://*.waze.com/*editor*
 // @exclude       *://*.waze.com/user/editor*
 // @exclude       *://*.waze.com/editor/sdk/*
-// @version       3.2.2
+// @version       3.3.0
 // @grant         GM_xmlhttpRequest
 // @grant         GM_info
 // @connect       greasyfork.org
@@ -45,6 +45,7 @@
  *  2026 "JS55CT"                    V3.0.0 Current maintainer; SDK migration,
  *                                   V3.1.0 - 3.1.5 RoundAbout support, JB and Paths
  *                                   V3.2.0  Added Continuous scanning for problem angles
+ *  *                                V3.3.0  Live Edit angle caculations
  */
 
 /*global I18n, $, bootstrap, turf, getWmeSdk, SDK_INITIALIZED, GM_info, GM_xmlhttpRequest*/
@@ -57,19 +58,9 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Version 3.2.2',
-    'Small bug fix',
-    'Version 3.2.0',
-    'Experimenmtal: "Scan for Angles to Avoid" feature: background detection of PROBLEM angles replaces the need for the BJAI script!',
-    'Version 3.1.5',
-    'Intermediate breadcrumbs inside a JB inherit all the routing logic: road type hierarchy (Primary vs Street), left-hand traffic, best-continuation detection, and Keep/Exit classification.',
-    'Version 3.1.4',
-    'More robust marker overlap prevention system',
-    'Version 3.1.3',
-    'Roundabout turn restriction detection — exits with local restrictions display as NO_TURN (gray), works for RHT and LHT countries',
-    'version 3.1.1',
-    'Experimental: Far-turn angle display for Junction Boxes — breadcrumb trail through complex intersections (disabled by default)',
-    'Experimental: Far-turn angle display for Paths — complete angle annotations along Path routes (disabled by default)',
+    'Version 3.3.0',
+    'Implement real-time marker updates during segment dragging',
+    'Experimental features released as "Advanced" options',
   ];
   const SCRIPT_VERSION = GM_info.script.version.toString();
   const DOWNLOAD_URL = 'https://update.greasyfork.org/scripts/35547/WME%20Junction%20Angle%20Info.user.js';
@@ -118,6 +109,15 @@
   var ja_nodes_all = [];                          // Copy of all viewport nodes (refreshed each scan start)
   var ja_continuous_enabled = false;              // Load from localStorage on init
   var ja_continuous_needs_batching = [];          // Nodes that need cache calculation (misses)
+
+  // ── Drag-Time Geometry Polling State (Real-time marker updates during segment drag) ──────────
+  // SVG polyline polling for immediate visual feedback while editing segment geometry
+  var ja_drag_geometry_polling_enabled = false;       // Is polling active? Turns on when segment selected
+  var ja_drag_geometry_selected_segment_id = null;    // Which segment are we polling? Set on selection
+  var ja_drag_geometry_last_coords = null;            // Last known coordinates for change detection
+  var ja_drag_geometry_last_poll_time = 0;            // Timestamp of last poll
+  var ja_drag_geometry_live_coords = null;            // SVG coords for current render pass (used by testSelectedItem during drag)
+  var JA_DRAG_GEOMETRY_POLL_INTERVAL = 100;           // milliseconds — poll SVG every 100ms during drag
 
   // ── Angle classification thresholds ──────────────────────────────────────
   // Waze routing instruction boundaries derived from map experiments and the Waze wiki.
@@ -770,9 +770,19 @@
 
       ja_current_node_segments.forEach(function (nodeSegment, j) {
         var s = sdk.DataModel.Segments.getById({ segmentId: nodeSegment });
+
+        // During drag polling: if this is the selected segment and we have live SVG coordinates,
+        // patch the segment object with the live geometry instead of the stale data model
+        if (ja_drag_geometry_live_coords && nodeSegment === ja_drag_geometry_selected_segment_id && s) {
+          s = ja_patchSegmentWithLiveCoords(s, ja_drag_geometry_live_coords);
+        }
+
         if (typeof s === 'undefined') {
           //Meh. Something went wrong, and we lost track of the segment. This needs a proper fix, but for now
           // it should be sufficient to just restart the calculation
+          if (ja_drag_geometry_polling_enabled) {
+            ja_log('RESTART during polling: segment ' + nodeSegment + ' undefined', 2);
+          }
           ja_log('Failed to read segment data from model. Restarting calculations.', 1);
           if (ja_last_restart === 0) {
             ja_last_restart = new Date().getTime();
@@ -1514,6 +1524,10 @@
     ja_current_features = [];
     ja_feature_counter = 0;
 
+    if (ja_drag_geometry_polling_enabled && ja_drag_geometry_live_coords) {
+      ja_log('Using live SVG coords for segment ' + ja_drag_geometry_selected_segment_id, 3);
+    }
+
     // If continuous scanning is active, mark all rendered markers as cleared (so they'll be re-rendered after on-demand markers)
     if (ja_continuous_mode) {
       ja_continuous_rendered.clear();
@@ -1642,6 +1656,10 @@
     var ja_end_time = Date.now();
     ja_log('Calculation took ' + String(ja_end_time - ja_start_time) + ' ms', 3);
 
+    if (ja_drag_geometry_polling_enabled) {
+      ja_log('Drag-time markers updated: ' + ja_current_features.length + ' features in ' + (ja_end_time - ja_start_time) + 'ms', 3);
+    }
+
     // After on-demand rendering completes, only re-render continuous markers if NO selection active
     // When user has something selected, on-demand markers take priority (continuous would clutter the view)
     // When user deselects, continuous markers reappear to show background problems
@@ -1660,6 +1678,179 @@
    */
   // Alias so ja_calculate_real() calls (from timer/ja_apply) work
   var ja_calculate_real = testSelectedItem;
+
+  // ── Drag-Time Geometry Polling Functions (Real-time marker updates) ──────────────────────────
+
+  /**
+   * Get the SVG polyline element for the selected segment
+   * Used by drag-time polling to extract live geometry during edits
+   */
+  function ja_getDragGeometryPoller(segmentId) {
+    try {
+      var element = sdk.Map.getFeatureDomElement({
+        featureId: segmentId,
+        layerName: 'segments'
+      });
+      return (element && element.tagName === 'polyline') ? element : null;
+    } catch (e) {
+      ja_log('Error getting polyline element: ' + e.message, 1);
+      return null;
+    }
+  }
+
+  /**
+   * Extract geopoints from SVG polyline points attribute
+   * Points format: "x1,y1,x2,y2,x3,y3" (map-relative pixels, comma-separated)
+   */
+  function ja_extractGeopointsFromSVG(polylineElement) {
+    try {
+      var pointsStr = polylineElement.getAttribute('points');
+      if (!pointsStr) return [];
+
+      var numbers = pointsStr.trim().split(',').map(function(n) { return parseFloat(n.trim()); });
+      var geopoints = [];
+
+      for (var i = 0; i < numbers.length; i += 2) {
+        if (i + 1 < numbers.length) {
+          geopoints.push({
+            pixelX: numbers[i],
+            pixelY: numbers[i + 1]
+          });
+        }
+      }
+
+      return geopoints;
+    } catch (e) {
+      ja_log('Error extracting geopoints from SVG: ' + e.message, 1);
+      return [];
+    }
+  }
+
+  /**
+   * Convert SVG map-pixel coordinates to lat/lon using SDK conversion
+   * Map-pixel coords are relative to the top-left of the map component (not screen)
+   */
+  function ja_pixelToLatLon(pixelX, pixelY) {
+    try {
+      var lonLat = sdk.Map.getLonLatFromMapPixel({ x: pixelX, y: pixelY });
+      return { lat: lonLat.lat, lon: lonLat.lon };
+    } catch (e) {
+      ja_log('Error converting pixel to lat/lon: ' + e.message, 1);
+      return null;
+    }
+  }
+
+  /**
+   * Convert all SVG geopoints to lat/lon coordinates
+   * Extracts from polyline and transforms to geographic coordinates
+   */
+  function ja_getSVGCoordsAsLatLon(polylineElement) {
+    var pixelCoords = ja_extractGeopointsFromSVG(polylineElement);
+    var latLonCoords = [];
+
+    pixelCoords.forEach(function(coord) {
+      var latLon = ja_pixelToLatLon(coord.pixelX, coord.pixelY);
+      if (latLon) {
+        latLonCoords.push(latLon);
+      }
+    });
+
+    return latLonCoords;
+  }
+
+  /**
+   * Check if coordinates have changed since last poll
+   * Compares at 6 decimal precision to avoid false positives from float rounding
+   */
+  function ja_haveCoordinatesChanged(newCoords) {
+    if (!ja_drag_geometry_last_coords) return true;
+    if (newCoords.length !== ja_drag_geometry_last_coords.length) return true;
+
+    for (var i = 0; i < newCoords.length; i++) {
+      var newLat = newCoords[i].lat.toFixed(6);
+      var newLon = newCoords[i].lon.toFixed(6);
+      var oldLat = ja_drag_geometry_last_coords[i].lat.toFixed(6);
+      var oldLon = ja_drag_geometry_last_coords[i].lon.toFixed(6);
+
+      if (newLat !== oldLat || newLon !== oldLon) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Poll the SVG polyline for coordinate changes during drag
+   * Called on every wme-map-mouse-move but throttled to JA_DRAG_GEOMETRY_POLL_INTERVAL
+   * When coordinates change: calls testSelectedItem() directly to redraw markers in real-time
+   * Bypasses ja_calculate() debounce for immediate visual feedback
+   */
+  function ja_pollSegmentGeometryDuringDrag() {
+    if (!ja_drag_geometry_polling_enabled || !ja_drag_geometry_selected_segment_id) return;
+
+    var now = Date.now();
+    if (now - ja_drag_geometry_last_poll_time < JA_DRAG_GEOMETRY_POLL_INTERVAL) return;
+    ja_drag_geometry_last_poll_time = now;
+
+    // Get the SVG polyline element
+    var polyline = ja_getDragGeometryPoller(ja_drag_geometry_selected_segment_id);
+    if (!polyline) {
+      ja_log('SVG polyline not found for segment ' + ja_drag_geometry_selected_segment_id, 2);
+      return;
+    }
+
+    // Extract current coordinates
+    var currentCoords = ja_getSVGCoordsAsLatLon(polyline);
+    if (currentCoords.length === 0) {
+      ja_log('No coordinates extracted from SVG', 2);
+      return;
+    }
+
+    // Check if changed
+    if (ja_haveCoordinatesChanged(currentCoords)) {
+      ja_log('Coordinates changed - ' + currentCoords.length + ' points', 3);
+
+      // Store live SVG coordinates so testSelectedItem() can use them instead of stale data model
+      ja_drag_geometry_live_coords = currentCoords;
+
+      // Direct call to testSelectedItem bypasses 200ms debounce for real-time feedback
+      // Safe: testSelectedItem() is idempotent (clears layer first)
+      testSelectedItem();
+
+      // Clear live coords after render (reset for next poll)
+      ja_drag_geometry_live_coords = null;
+
+      // Cache for next comparison
+      ja_drag_geometry_last_coords = JSON.parse(JSON.stringify(currentCoords));
+    }
+  }
+
+  /**
+   * Patch a segment object with live SVG coordinates during drag
+   * Replaces the segment's geometry with live coords from the SVG while keeping node IDs intact
+   * This allows angle calculations to use current dragged position instead of stale data model
+   * @param {Object} segment - Original segment from data model
+   * @param {Array} liveCoords - Array of {lat, lon} coordinate objects from SVG
+   * @returns {Object} Modified segment with live geometry
+   */
+  function ja_patchSegmentWithLiveCoords(segment, liveCoords) {
+    if (!segment || !liveCoords || liveCoords.length < 2) return segment;
+
+    // Create a shallow copy so we don't mutate the data model
+    var patchedSegment = Object.assign({}, segment);
+
+    // Replace geometry with live coordinates
+    patchedSegment.geometry = {
+      type: 'LineString',
+      coordinates: liveCoords.map(function (coord) {
+        return [coord.lon, coord.lat];  // GeoJSON format: [lon, lat]
+      })
+    };
+
+    ja_log('Segment ' + segment.id + ' patched with ' + liveCoords.length + ' live points', 4);
+    return patchedSegment;
+  }
 
   /*
    * Drawing functions
@@ -5667,8 +5858,8 @@
     uturnsCard.body.appendChild(makeRow(ja_getMessage('wazeDoubleUTurnRestriction'), makeToggle('wazeDoubleUTurnRestriction')));
     jaTabPane.appendChild(uturnsCard.card);
 
-    // ── Experimental card ──────────────────────────────────────────────
-    var experimentalCard = makeCard('fa-flask', 'Experimental');
+    // ── Advanced card ──────────────────────────────────────────────
+    var experimentalCard = makeCard('fa-flask', 'Advanced');
     experimentalCard.body.appendChild(makeRow(ja_getMessage('enableFarTurnJB'), makeToggle('enableFarTurnJB')));
     experimentalCard.body.appendChild(makeRow(ja_getMessage('enableFarTurnPath'), makeToggle('enableFarTurnPath')));
     experimentalCard.body.appendChild(makeRow(ja_getMessage('continuousScanning'), makeToggle('continuousScanning')));
@@ -5716,7 +5907,33 @@
    */
   async function junctionangle_init() {
     // ── Event registration ────────────────────────────────────────────
-    sdk.Events.on({ eventName: 'wme-selection-changed', eventHandler: testSelectedItem });
+    sdk.Events.on({
+      eventName: 'wme-selection-changed',
+      eventHandler: function () {
+        // Handle drag-time polling: enable when segment selected, disable otherwise
+        var selection = sdk.Editing.getSelection();
+
+        if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
+          // Segment selected: enable polling for real-time updates during drag
+          ja_drag_geometry_polling_enabled = true;
+          ja_drag_geometry_selected_segment_id = selection.ids[0];
+          ja_drag_geometry_last_coords = null;        // Reset cache
+          ja_drag_geometry_last_poll_time = 0;        // Reset throttle
+          ja_log('Drag-time polling: ON (segment ' + ja_drag_geometry_selected_segment_id + ')', 2);
+        } else {
+          // Nothing selected or wrong type: disable polling
+          ja_drag_geometry_polling_enabled = false;
+          ja_drag_geometry_selected_segment_id = null;
+          ja_drag_geometry_last_coords = null;
+          if (selection) {
+            ja_log('Drag-time polling: OFF', 2);
+          }
+        }
+
+        // Call original handler to render on-demand markers
+        testSelectedItem();
+      },
+    });
 
     sdk.Events.trackDataModelEvents({ dataModelName: 'segments' });
     sdk.Events.on({
@@ -5802,6 +6019,16 @@
         if (ja_continuous_mode) {
           ja_debounced_continuous_scan();
         }
+      },
+    });
+
+    // ── Drag-Time Geometry Polling: Real-time marker updates during segment edit ────────
+    // Polls SVG polyline for coordinate changes based on JA_DRAG_GEOMETRY_POLL_INTERVAL and redraws markers immediately
+    // Only active when a segment is selected; stops automatically when deselected
+    sdk.Events.on({
+      eventName: 'wme-map-mouse-move',
+      eventHandler: function () {
+        ja_pollSegmentGeometryDuringDrag();
       },
     });
 
